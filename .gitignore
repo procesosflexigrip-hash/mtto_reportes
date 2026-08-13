@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Excel temporales
+~$*.xlsx
+~$*.xls
+~$*.xlsm
+
+# Excel de datos internos
+validacion.xlsx
+
+# Archivos temporales
+*.tmp
+*.temp
+*.bak
+
+# Sistema
+Thumbs.db
+.DS_Store
+
+# Configuración y datos sensibles
+.env
+*.log
