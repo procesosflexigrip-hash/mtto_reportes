@@ -128,6 +128,10 @@
   .msg{font-size:13px;padding:10px 14px;border-radius:8px;margin-top:12px;display:none;}
   .msg.ok{display:block;background:rgba(76,175,125,.12);border:1px solid var(--ok);color:#b6f0cf;}
   .msg.err{display:block;background:rgba(239,91,91,.12);border:1px solid var(--danger);color:#ffc7c7;}
+  .aviso-toast{position:fixed;bottom:20px;right:16px;z-index:80;max-width:360px;background:var(--panel2);
+    border:1px solid var(--accent2);color:var(--text);padding:12px 16px;border-radius:8px;font-size:13px;
+    display:none;}
+  .aviso-toast.show{display:block;}
 
   .pin-gate{max-width:340px;margin:10px auto;text-align:center;padding:26px 20px;}
   .pin-gate .lock{font-size:32px;margin-bottom:6px;}
@@ -201,6 +205,7 @@
 </head>
 <body>
 <div class="wrap">
+<div class="aviso-toast" id="avisoToast"></div>
 
   <header class="top">
     <div class="brand">
@@ -557,7 +562,9 @@ populateDatalist('dl_solicitante', LISTS.SOLICITANTE);
 
 function todayStr(){
   const d = new Date();
-  return d.toISOString().slice(0,10);
+  return String(d.getFullYear())+'-'+
+    String(d.getMonth()+1).padStart(2,'0')+'-'+
+    String(d.getDate()).padStart(2,'0');
 }
 function nowTimeStr(){
   const d = new Date();
@@ -588,6 +595,7 @@ function validarPinSupervisor(){
     supervisorUnlocked = true;
     document.getElementById('pinGateSupervisor').style.display = 'none';
     document.getElementById('supervisorContent').style.display = 'block';
+    pedirPermisoAvisos();
     renderTicketLists();
   }else{
     msg.className = 'msg err';
@@ -606,6 +614,7 @@ function validarPinTecnico(){
     document.getElementById('pinGateTecnico').style.display = 'none';
     document.getElementById('tecnicoContent').style.display = 'block';
     document.getElementById('tecnicoSaludoNombre').textContent = encontrado.nombre;
+    pedirPermisoAvisos();
     renderTecnicoView();
   }else{
     msg.className = 'msg err';
@@ -652,16 +661,117 @@ function showMsgIn(elId, text, ok){
   setTimeout(()=>{ el.className='msg'; }, 4000);
 }
 
-let storageAvailable = true;
+let storageAvailable = false;
 
 function urlConfigurada(){
   return SHEET_WEBAPP_URL && !SHEET_WEBAPP_URL.includes('PEGA_AQUI');
 }
 
+const ACCIONES_QUE_GUARDAN = [
+  'crearSolicitud(', 'liberarServicio(', 'confirmarLlegada(',
+  'confirmarInicio(', 'confirmarAgregar(', 'cancelarAsignacion(',
+  'quitarTecnico(', 'pausarReparacion(', 'confirmarReanudacion(',
+  'cerrarServicio('
+];
+
+function actualizarControlesGuardado(){
+  document.querySelectorAll('button[onclick]').forEach(btn=>{
+    const accion = btn.getAttribute('onclick') || '';
+    if(ACCIONES_QUE_GUARDAN.some(nombre=>accion.includes(nombre))){
+      btn.disabled = !storageAvailable;
+      btn.title = storageAvailable ? '' : 'Sin conexión segura con Google Sheets. Actualiza la página.';
+    }
+  });
+}
+
+function vistaSupervisorOTecnico(){
+  const vs = document.getElementById('viewSupervisor');
+  const vt = document.getElementById('viewTecnico');
+  return (vs && vs.classList.contains('active')) || (vt && vt.classList.contains('active'));
+}
+
+function firmaAvisos(regs){
+  const pendientes = (regs||[]).filter(r=>r.estado==='Pendiente').map(r=>r.id);
+  const asignados = {};
+  (regs||[]).filter(r=>r.estado==='Asignado').forEach(r=>{
+    (r.tecnicosActivos||[]).forEach(n=>{
+      if(!asignados[n]) asignados[n] = [];
+      asignados[n].push(r.id);
+    });
+  });
+  return {pendientes, asignados};
+}
+
+function pedirPermisoAvisos(){
+  if(typeof Notification === 'undefined') return;
+  if(Notification.permission === 'default'){
+    Notification.requestPermission().catch(()=>{});
+  }
+}
+
+function sonarAviso(){
+  try{
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if(!Ctx) return;
+    const ctx = new Ctx();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.08, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+    o.start();
+    o.stop(ctx.currentTime + 0.2);
+  }catch(e){}
+}
+
+function mostrarAvisoLocal(texto){
+  const el = document.getElementById('avisoToast');
+  if(el){
+    el.textContent = texto;
+    el.classList.add('show');
+    setTimeout(()=>{ el.classList.remove('show'); }, 6000);
+  }
+  sonarAviso();
+  if(typeof Notification !== 'undefined' && Notification.permission === 'granted'){
+    try{ new Notification('Mantenimiento Flexigrip', {body: texto}); }catch(e){}
+  }
+}
+
+function aplicarAvisosLocales(prev, next){
+  if(!prev || !next) return;
+  if(supervisorUnlocked){
+    const vistos = new Set(prev.pendientes||[]);
+    (next.pendientes||[]).forEach(id=>{
+      if(!vistos.has(id)){
+        const r = registros.find(x=>x.id===id);
+        const det = r ? (r.maquina||'') + (r.area ? ' ('+r.area+')' : '') : '';
+        mostrarAvisoLocal('Nuevo reporte #' + id + (det ? ' · '+det : ''));
+      }
+    });
+  }
+  if(tecnicoUnlocked && tecnicoActualNombre){
+    const vistos = new Set((prev.asignados && prev.asignados[tecnicoActualNombre]) || []);
+    const actuales = (next.asignados && next.asignados[tecnicoActualNombre]) || [];
+    actuales.forEach(id=>{
+      if(!vistos.has(id)){
+        const r = registros.find(x=>x.id===id);
+        const det = r ? (r.maquina||'') : '';
+        mostrarAvisoLocal('Te asignaron el servicio #' + id + (det ? ' · '+det : ''));
+      }
+    });
+  }
+}
+
+let snapshotAvisos = null;
+
 async function cargarRegistros(silent){
   if(!urlConfigurada()){
     storageAvailable = false;
-    showBanner('Este formulario aún no está conectado a Google Sheets. Configura SHEET_WEBAPP_URL en el archivo (ver instrucciones) para que el guardado sea permanente y compartido.');
+    actualizarControlesGuardado();
+    if(!silent){
+      showBanner('Este formulario aún no está conectado a Google Sheets. Configura SHEET_WEBAPP_URL en el archivo (ver instrucciones) para que el guardado sea permanente y compartido.');
+    }
     renderTable();
     renderKpis();
     if(supervisorUnlocked) renderTicketLists();
@@ -670,32 +780,58 @@ async function cargarRegistros(silent){
   }
   try{
     const res = await fetch(SHEET_WEBAPP_URL, {method:'GET'});
+    if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    registros = Array.isArray(data) ? data : [];
+    if(!Array.isArray(data)){
+      throw new Error('El servidor no devolvió una lista válida de registros.');
+    }
+    registros = data;
     storageAvailable = true;
   }catch(e){
+    storageAvailable = false;
     console.error(e);
-    showBanner('No se pudo cargar desde Google Sheets: ' + (e && e.message ? e.message : e));
+    showBanner('No se pudo cargar desde Google Sheets. El guardado está bloqueado para proteger los registros. Detalle: ' + (e && e.message ? e.message : e));
   }
+  const nextSnap = firmaAvisos(registros);
+  if(silent && snapshotAvisos){
+    aplicarAvisosLocales(snapshotAvisos, nextSnap);
+  }
+  snapshotAvisos = nextSnap;
   renderTable();
   renderKpis();
   if(supervisorUnlocked) renderTicketLists();
   if(tecnicoUnlocked) renderTecnicoView();
+  actualizarControlesGuardado();
 }
 
 async function guardarRegistros(){
   if(!urlConfigurada()){
+    showBanner('No se puede guardar: falta configurar la conexión con Google Sheets.');
+    return false;
+  }
+  if(!storageAvailable){
+    showBanner('Guardado bloqueado para proteger los datos: primero actualiza y confirma que los registros cargan desde Google Sheets.');
     return false;
   }
   try{
-    await fetch(SHEET_WEBAPP_URL, {
+    const res = await fetch(SHEET_WEBAPP_URL, {
       method: 'POST',
       body: JSON.stringify(registros)
     });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if(!data || data.ok !== true){
+      const faltantes = data && Array.isArray(data.idsFaltantes) && data.idsFaltantes.length
+        ? ' IDs faltantes: ' + data.idsFaltantes.join(', ')
+        : '';
+      throw new Error((data && data.error ? data.error : 'El servidor rechazó el guardado.') + faltantes);
+    }
     return true;
   }catch(e){
+    storageAvailable = false;
+    actualizarControlesGuardado();
     console.error('Error guardando', e);
-    showBanner('No se pudo sincronizar con Google Sheets: ' + (e && e.message ? e.message : e));
+    showBanner('No se guardó ningún cambio. Se bloquearon las acciones para proteger los registros. Actualiza la página. Detalle: ' + (e && e.message ? e.message : e));
     return false;
   }
 }
@@ -1484,6 +1620,14 @@ function tickClock(){
 tickClock();
 setInterval(tickClock, 1000*15);
 
+setInterval(function(){
+  if(!urlConfigurada()) return;
+  if(!supervisorUnlocked && !tecnicoUnlocked) return;
+  if(!vistaSupervisorOTecnico()) return;
+  cargarRegistros(true);
+}, 45000);
+
+actualizarControlesGuardado();
 cargarRegistros();
 </script>
 </body>
