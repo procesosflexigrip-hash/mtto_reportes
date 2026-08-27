@@ -78,10 +78,19 @@
   .card p.hint{color:var(--muted);font-size:12.5px;margin:-8px 0 16px;}
 
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px 14px;}
-  .field{display:flex;flex-direction:column;gap:5px;}
+  .field{display:flex;flex-direction:column;gap:5px;position:relative;}
   .field.span2{grid-column:span 2;}
   .field label{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;}
   .field label .req{color:var(--danger);}
+
+  .ac-list{position:absolute;top:100%;left:0;right:0;z-index:60;display:none;margin-top:4px;
+    max-height:240px;overflow-y:auto;background:var(--panel2);border:1px solid var(--accent);
+    border-radius:8px;box-shadow:0 8px 20px rgba(0,0,0,.45);}
+  .ac-list.show{display:block;}
+  .ac-item{padding:9px 11px;font-size:14px;cursor:pointer;border-bottom:1px solid var(--line);}
+  .ac-item:last-child{border-bottom:none;}
+  .ac-item:hover, .ac-item.active{background:var(--panel);color:var(--accent);}
+  .ac-hint{padding:7px 11px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--line);}
   input, select, textarea{
     background:var(--panel2);border:1px solid var(--line);color:var(--text);
     border-radius:8px;padding:10px 11px;font-size:14.5px;font-family:inherit;width:100%;
@@ -261,13 +270,13 @@
         </div>
         <div class="field">
           <label>Máquina <span class="req">*</span></label>
-          <input type="text" id="f_maquina" list="dl_maquina" placeholder="Escribe o elige…" required>
-          <datalist id="dl_maquina"></datalist>
+          <input type="text" id="f_maquina" placeholder="Escribe o elige…" required autocomplete="off">
+          <div class="ac-list" id="ac_f_maquina"></div>
         </div>
         <div class="field">
           <label>Solicitante <span class="req">*</span></label>
-          <input type="text" id="f_solicitante" list="dl_solicitante" placeholder="Escribe el nombre…" required oninput="chequearGerente()">
-          <datalist id="dl_solicitante"></datalist>
+          <input type="text" id="f_solicitante" placeholder="Escribe el nombre…" required autocomplete="off" oninput="chequearGerente()">
+          <div class="ac-list" id="ac_f_solicitante"></div>
         </div>
         <div class="field">
           <label>Prioridad <span class="req">*</span></label>
@@ -307,7 +316,8 @@
       <div class="grid">
         <div class="field">
           <label>Tu nombre (como lo pusiste al reportar)</label>
-          <input type="text" id="lib_nombre" list="dl_solicitante" placeholder="Escribe tu nombre…" oninput="renderLiberarLista()">
+          <input type="text" id="lib_nombre" placeholder="Escribe tu nombre…" autocomplete="off" oninput="renderLiberarLista()">
+          <div class="ac-list" id="ac_lib_nombre"></div>
         </div>
       </div>
       <div class="ticket-list" id="liberarLista" style="margin-top:14px;"></div>
@@ -537,12 +547,108 @@ function populateSelect(elId, values){
     el.appendChild(opt);
   });
 }
-function populateDatalist(dlId, values){
-  const dl = document.getElementById(dlId);
-  values.forEach(v=>{
-    const opt = document.createElement('option');
-    opt.value = v;
-    dl.appendChild(opt);
+const AC_MAX_SUGERENCIAS = 60;
+
+function normalizarTexto(valor){
+  return String(valor==null?'':valor)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .trim();
+}
+
+// Sustituye al <datalist> nativo: los navegadores filtran solo por el inicio del
+// texto y con listas largas a veces no despliegan nada.
+function initAutocomplete(inputId, values){
+  const input = document.getElementById(inputId);
+  const lista = document.getElementById('ac_' + inputId);
+  if(!input || !lista) return;
+
+  const opciones = (values||[]).map(v=>({texto:String(v), clave:normalizarTexto(v)}));
+  let visibles = [];
+  let activo = -1;
+  let suprimirInput = false;
+  let totalCoincidencias = 0;
+
+  function cerrar(){
+    lista.classList.remove('show');
+    lista.innerHTML = '';
+    visibles = [];
+    activo = -1;
+  }
+
+  function pintar(){
+    lista.innerHTML = '';
+    visibles.forEach((o,i)=>{
+      const item = document.createElement('div');
+      item.className = 'ac-item' + (i===activo ? ' active' : '');
+      item.textContent = o.texto;
+      item.setAttribute('data-idx', i);
+      lista.appendChild(item);
+    });
+    if(totalCoincidencias > visibles.length){
+      const hint = document.createElement('div');
+      hint.className = 'ac-hint';
+      hint.textContent = 'Mostrando ' + visibles.length + ' de ' + totalCoincidencias + ' — escribe más para afinar.';
+      lista.appendChild(hint);
+    }
+    lista.classList.add('show');
+  }
+
+  function abrir(){
+    const q = normalizarTexto(input.value);
+    const coincidencias = q ? opciones.filter(o=>o.clave.includes(q)) : opciones;
+    totalCoincidencias = coincidencias.length;
+    visibles = coincidencias.slice(0, AC_MAX_SUGERENCIAS);
+    activo = -1;
+    if(visibles.length === 0){ cerrar(); return; }
+    pintar();
+  }
+
+  function scrollActivo(){
+    const el = lista.querySelector('.ac-item.active');
+    if(el && el.scrollIntoView) el.scrollIntoView({block:'nearest'});
+  }
+
+  function elegir(i){
+    const o = visibles[i];
+    if(!o) return;
+    input.value = o.texto;
+    cerrar();
+    suprimirInput = true;
+    input.dispatchEvent(new Event('input', {bubbles:true}));
+    suprimirInput = false;
+  }
+
+  input.addEventListener('input', ()=>{ if(!suprimirInput) abrir(); });
+  input.addEventListener('focus', abrir);
+  input.addEventListener('blur', ()=>{ setTimeout(cerrar, 150); });
+
+  input.addEventListener('keydown', e=>{
+    if(!lista.classList.contains('show')){
+      if(e.key === 'ArrowDown'){ e.preventDefault(); abrir(); }
+      return;
+    }
+    if(e.key === 'ArrowDown'){
+      e.preventDefault();
+      activo = Math.min(activo + 1, visibles.length - 1);
+      pintar(); scrollActivo();
+    }else if(e.key === 'ArrowUp'){
+      e.preventDefault();
+      activo = Math.max(activo - 1, 0);
+      pintar(); scrollActivo();
+    }else if(e.key === 'Enter'){
+      if(activo >= 0){ e.preventDefault(); elegir(activo); }
+    }else if(e.key === 'Escape'){
+      cerrar();
+    }
+  });
+
+  lista.addEventListener('mousedown', e=>{ e.preventDefault(); });
+  lista.addEventListener('click', e=>{
+    const item = e.target.closest ? e.target.closest('.ac-item') : null;
+    if(!item) return;
+    elegir(Number(item.getAttribute('data-idx')));
   });
 }
 
@@ -557,8 +663,9 @@ populateSelect('f_paro', LISTS['PARO MAQUINA']);
 populateSelect('f_bloqueo', LISTS['BLOQUE Y CANDADEO']);
 populateSelect('f_turno', TURNOS);
 populateSelect('r_turno', TURNOS);
-populateDatalist('dl_maquina', LISTS.MAQUINA);
-populateDatalist('dl_solicitante', LISTS.SOLICITANTE);
+initAutocomplete('f_maquina', LISTS.MAQUINA);
+initAutocomplete('f_solicitante', LISTS.SOLICITANTE);
+initAutocomplete('lib_nombre', LISTS.SOLICITANTE);
 
 function todayStr(){
   const d = new Date();
