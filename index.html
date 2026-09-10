@@ -69,6 +69,9 @@
   .kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;}
   .kpi .n{font-size:21px;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums;}
   .kpi .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-top:2px;}
+  .kpi.warn{border-color:var(--warn);}
+  .kpi.warn .n{color:var(--warn);}
+  .ticket.ticket-alerta{border-color:var(--warn);}
 
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin-bottom:18px;}
   .card h2{font-size:14px;margin:0 0 14px;text-transform:uppercase;letter-spacing:.6px;color:var(--accent2);
@@ -347,6 +350,7 @@
         <div class="kpi"><div class="n" id="kpiAsignados">0</div><div class="l">Por confirmar</div></div>
         <div class="kpi"><div class="n" id="kpiEnCurso">0</div><div class="l">En reparación</div></div>
         <div class="kpi"><div class="n" id="kpiPausados">0</div><div class="l">Pausados</div></div>
+        <div class="kpi" id="kpiPausadosViejosBox"><div class="n" id="kpiPausadosViejos">0</div><div class="l">Pausados &gt; 8 h</div></div>
         <div class="kpi"><div class="n" id="kpiEspera">0.0 h</div><div class="l">Espera promedio</div></div>
         <div class="kpi"><div class="n" id="kpiReparacion">0.0 h</div><div class="l">Reparación promedio</div></div>
       </div>
@@ -367,7 +371,7 @@
         <div class="ticket-list" id="ticketListProg"></div>
         <div class="empty" id="emptyProg" style="display:none;">Nadie está reparando algo en este momento.</div>
 
-        <div class="subhead"><span class="dot" style="background:var(--muted);"></span> Pausados — esperando retomar</div>
+        <div class="subhead"><span class="dot" style="background:var(--muted);"></span> Pausados — esperando retomar <span id="pausadosViejosHint" style="text-transform:none;letter-spacing:0;font-weight:400;"></span></div>
         <div class="ticket-list" id="ticketListPaused"></div>
         <div class="empty" id="emptyPaused" style="display:none;">No hay servicios pausados.</div>
       </div>
@@ -418,14 +422,14 @@
         <div class="duration-box">
           <div>
             <div class="big" id="durBig">0.00 h</div>
-            <div class="sub">Tiempo de reparación (inicio → ahora)</div>
+            <div class="sub">Tiempo de reparación (pausas descontadas)</div>
           </div>
-          <div class="pill" id="durEspera">Espera previa: —</div>
+          <div class="pill" id="durEspera">Espera solicitud → sitio: —</div>
           <div class="pill" id="durInicio">Inicio: —</div>
         </div>
 
         <div class="actions">
-          <button class="btn-primary" onclick="cerrarServicio()">Guardar cierre</button>
+          <button class="btn-primary" id="btnGuardarCierre" onclick="cerrarServicio()">Guardar cierre</button>
           <button class="btn-ghost" onclick="cancelarCierre()">Cancelar</button>
         </div>
         <div class="msg" id="cierreMsg"></div>
@@ -468,7 +472,7 @@
             <thead>
               <tr>
                 <th>ID</th><th>Estado</th><th>Fecha sol.</th><th>Área</th><th>Máquina</th><th>Solicitante</th>
-                <th>Prioridad</th><th>Técnicos</th><th>Espera (h)</th><th>Reparación (h)</th><th>Turno</th><th>Paro</th>
+                <th>Prioridad</th><th>Técnicos vigentes</th><th>Espera sol.→sitio (h)</th><th>Reparación (h)</th><th>Turno</th><th>Paro</th>
               </tr>
             </thead>
             <tbody id="tbody"></tbody>
@@ -557,6 +561,14 @@ function normalizarTexto(valor){
     .trim();
 }
 
+function valorCanonicoLista(valor, lista){
+  const v = String(valor==null?'':valor).trim();
+  if(!v) return v;
+  const clave = normalizarTexto(v);
+  const hit = (lista||[]).find(x=>normalizarTexto(x)===clave);
+  return hit || v;
+}
+
 // Sustituye al <datalist> nativo: los navegadores filtran solo por el inicio del
 // texto y con listas largas a veces no despliegan nada.
 function initAutocomplete(inputId, values){
@@ -622,7 +634,11 @@ function initAutocomplete(inputId, values){
 
   input.addEventListener('input', ()=>{ if(!suprimirInput) abrir(); });
   input.addEventListener('focus', abrir);
-  input.addEventListener('blur', ()=>{ setTimeout(cerrar, 150); });
+  input.addEventListener('blur', ()=>{
+    const canon = valorCanonicoLista(input.value, values);
+    if(canon !== input.value) input.value = canon;
+    setTimeout(cerrar, 150);
+  });
 
   input.addEventListener('keydown', e=>{
     if(!lista.classList.contains('show')){
@@ -761,6 +777,109 @@ function diffHoursMin(fechaA, horaA, fechaB, horaB){
   };
 }
 
+function minutosEntre(fechaA, horaA, fechaB, horaB){
+  const d = diffHoursMin(fechaA, horaA, fechaB, horaB);
+  return d ? d.totalMin : 0;
+}
+
+const PAUSA_ALERTA_HORAS = 8;
+
+function inicioPausaAbierta(r){
+  if(r.pausaDesdeFecha && r.pausaDesdeHora){
+    return {fecha: r.pausaDesdeFecha, hora: r.pausaDesdeHora};
+  }
+  if(r.estado!=='Pausado') return null;
+  const hist = r.historial||[];
+  for(let i=hist.length-1;i>=0;i--){
+    const a = (hist[i].accion||'').toLowerCase();
+    if(a==='pausado' || a.indexOf('pausado')>=0){
+      return {fecha: hist[i].fecha, hora: hist[i].hora};
+    }
+  }
+  return null;
+}
+
+function minutosPausadoAbierto(r){
+  const inicio = inicioPausaAbierta(r);
+  if(!inicio) return 0;
+  return minutosEntre(inicio.fecha, inicio.hora, todayStr(), nowTimeStr());
+}
+
+function esPausadoViejo(r){
+  return r.estado==='Pausado' && minutosPausadoAbierto(r) >= PAUSA_ALERTA_HORAS*60;
+}
+
+function minutosPausaAcumulados(r, hastaFecha, hastaHora){
+  let min = r.minutosPausa || 0;
+  const inicio = (r.estado==='Pausado') ? inicioPausaAbierta(r) : (r.pausaDesdeFecha && r.pausaDesdeHora ? {fecha:r.pausaDesdeFecha, hora:r.pausaDesdeHora} : null);
+  if(inicio){
+    min += minutosEntre(inicio.fecha, inicio.hora, hastaFecha, hastaHora);
+  }
+  return min;
+}
+
+function minutosReparacionNeta(r, hastaFecha, hastaHora){
+  if(!r.fechaInicio || !r.horaInicio) return 0;
+  const wall = minutosEntre(r.fechaInicio, r.horaInicio, hastaFecha, hastaHora);
+  return Math.max(0, wall - minutosPausaAcumulados(r, hastaFecha, hastaHora));
+}
+
+function formatoMinutos(mins){
+  const h = Math.floor(mins/60), m = mins%60;
+  return (h>0 ? h+'h ' : '') + m + 'm';
+}
+
+function marcarInicioPausa(rec){
+  if(rec.pausaDesdeFecha) return rec;
+  return {
+    ...rec,
+    pausaDesdeFecha: todayStr(),
+    pausaDesdeHora: nowTimeStr()
+  };
+}
+
+function cerrarIntervaloPausa(rec){
+  let extra = 0;
+  let desdeFecha = rec.pausaDesdeFecha;
+  let desdeHora = rec.pausaDesdeHora;
+  if((!desdeFecha || !desdeHora) && rec.estado==='Pausado'){
+    extra = minutosPausaAcumulados({...rec, minutosPausa:0}, todayStr(), nowTimeStr());
+  }else if(desdeFecha && desdeHora){
+    extra = minutosEntre(desdeFecha, desdeHora, todayStr(), nowTimeStr());
+  }
+  return {
+    minutosPausa: (rec.minutosPausa||0) + extra,
+    pausaDesdeFecha: '',
+    pausaDesdeHora: ''
+  };
+}
+
+function tecnicosVigentesTexto(r, sep){
+  const joiner = sep || ', ';
+  if(r.estado==='Pendiente') return '';
+  if(r.estado==='Asignado' || r.estado==='En reparación'){
+    return (r.tecnicosActivos||[]).join(joiner);
+  }
+  return (r.tecnicosHistorico||[]).join(joiner);
+}
+
+function solicitudesCasiDuplicadas(maquina, problema){
+  const m = normalizarTexto(maquina);
+  const p = normalizarTexto(problema);
+  const ahora = Date.now();
+  const ventanaMs = 30*60*1000;
+  const abiertos = {Pendiente:1, Asignado:1, 'En reparación':1, Pausado:1};
+  return registros.filter(r=>{
+    if(!abiertos[r.estado]) return false;
+    if(normalizarTexto(r.maquina) !== m) return false;
+    if(normalizarTexto(r.problema||'') !== p) return false;
+    const dt = new Date(r.fecha+'T'+(r.horaSolicita||'00:00')+':00');
+    if(isNaN(dt.getTime())) return true;
+    const delta = ahora - dt.getTime();
+    return delta >= 0 && delta <= ventanaMs;
+  });
+}
+
 function showMsgIn(elId, text, ok){
   const el = document.getElementById(elId);
   el.className = 'msg ' + (ok?'ok':'err');
@@ -770,6 +889,8 @@ function showMsgIn(elId, text, ok){
 
 let storageAvailable = false;
 let creandoSolicitud = false;
+let cerrandoServicio = false;
+const confirmandoLlegada = {};
 
 function urlConfigurada(){
   return SHEET_WEBAPP_URL && !SHEET_WEBAPP_URL.includes('PEGA_AQUI');
@@ -790,6 +911,17 @@ function actualizarControlesGuardado(){
         btn.disabled = true;
         return;
       }
+      if(accion.includes('cerrarServicio(') && cerrandoServicio){
+        btn.disabled = true;
+        return;
+      }
+      if(accion.includes('confirmarLlegada(') && Object.keys(confirmandoLlegada).length){
+        const m = accion.match(/confirmarLlegada\((\d+)\)/);
+        if(m && confirmandoLlegada[m[1]]){
+          btn.disabled = true;
+          return;
+        }
+      }
       btn.disabled = !storageAvailable;
       btn.title = storageAvailable ? '' : 'Sin conexión segura con Google Sheets. Actualiza la página.';
     }
@@ -809,6 +941,22 @@ function setEnviandoSolicitud(activo){
     btn.disabled = !storageAvailable;
     btn.title = storageAvailable ? '' : 'Sin conexión segura con Google Sheets. Actualiza la página.';
   }
+}
+
+function setCerrandoServicio(activo){
+  cerrandoServicio = activo;
+  const btn = document.getElementById('btnGuardarCierre');
+  if(btn){
+    if(activo){
+      btn.disabled = true;
+      btn.textContent = 'Guardando…';
+    }else{
+      btn.textContent = 'Guardar cierre';
+      btn.disabled = !storageAvailable;
+      btn.title = storageAvailable ? '' : 'Sin conexión segura con Google Sheets. Actualiza la página.';
+    }
+  }
+  actualizarControlesGuardado();
 }
 
 function vistaSupervisorOTecnico(){
@@ -1007,6 +1155,16 @@ async function crearSolicitud(){
   }
   const tipoFinal = esGerente ? document.getElementById('f_tipo').value : 'CORRECTIVO';
 
+  const maquina = valorCanonicoLista(document.getElementById('f_maquina').value, LISTS.MAQUINA);
+  document.getElementById('f_maquina').value = maquina;
+  const problema = document.getElementById('f_problema').value;
+  const gemelos = solicitudesCasiDuplicadas(maquina, problema);
+  if(gemelos.length){
+    const ids = gemelos.map(g=>'#'+g.id).join(', ');
+    const seguir = confirm('Ya hay un reporte abierto de esta máquina con el mismo problema ('+ids+') en los últimos 30 min. ¿Crear otro de todos modos?');
+    if(!seguir) return;
+  }
+
   const fecha = todayStr();
   const horaSolicita = nowTimeStr();
   const dObj = new Date(fecha+'T00:00:00');
@@ -1021,12 +1179,12 @@ async function crearSolicitud(){
     semana: isoWeek(dObj),
     mes: MESES[dObj.getMonth()],
     area: document.getElementById('f_area').value,
-    maquina: document.getElementById('f_maquina').value,
+    maquina: maquina,
     solicitante: document.getElementById('f_solicitante').value,
     horaSolicita: horaSolicita,
     prioridad: document.getElementById('f_prioridad').value,
     falla:'', tipo: tipoFinal, turno:'',
-    problema: document.getElementById('f_problema').value,
+    problema: problema,
     codigoConfirmacion: codigo,
     confirmadoEnSitio: false,
     fechaAsignado:'', horaAsignado:'',
@@ -1038,6 +1196,9 @@ async function crearSolicitud(){
     paroMaquina:'',
     tecnicosActivos: [],
     tecnicosHistorico: [],
+    minutosPausa: 0,
+    pausaDesdeFecha: '',
+    pausaDesdeHora: '',
     historial: [{accion:'Solicitado', tecnicos:[], fecha, hora:horaSolicita}],
     creadoEn: new Date().toISOString()
   };
@@ -1223,7 +1384,7 @@ function renderTicketLists(){
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
         <div class="left">
           <b>#${r.id} · ${r.maquina} (${r.area})</b>
-          <div class="meta">${r.solicitante} · desde ${r.fechaInicio} ${r.horaInicio} · <span class="elapsed" data-inicio="${r.fechaInicio}T${r.horaInicio}:00">--</span></div>
+          <div class="meta">${r.solicitante} · desde ${r.fechaInicio} ${r.horaInicio} · <span class="elapsed" data-id="${r.id}">--</span></div>
           <div class="tec-names">👤 ${(r.tecnicosActivos&&r.tecnicosActivos.length) ? r.tecnicosActivos.map(t=>`<span class="tec-chip">${t}<button onclick="quitarTecnico(${r.id},'${t.replace(/'/g,"\\'")}')" title="Quitar">✕</button></span>`).join('') : '—'}</div>
         </div>
         <div class="right">
@@ -1245,12 +1406,23 @@ function renderTicketLists(){
   `).join('');
 
   document.getElementById('emptyPaused').style.display = pausados.length ? 'none' : 'block';
-  pausedWrap.innerHTML = pausados.map(r=>`
-    <div class="ticket ticket-col">
+  const pausadosViejos = pausados.filter(esPausadoViejo);
+  const hint = document.getElementById('pausadosViejosHint');
+  if(hint){
+    hint.textContent = pausadosViejos.length
+      ? ' · ' + pausadosViejos.length + ' lleva' + (pausadosViejos.length===1?'':'n') + ' más de ' + PAUSA_ALERTA_HORAS + ' h'
+      : '';
+    hint.style.color = pausadosViejos.length ? 'var(--warn)' : '';
+  }
+  pausedWrap.innerHTML = pausados.map(r=>{
+    const minPausa = minutosPausadoAbierto(r);
+    const viejo = minPausa >= PAUSA_ALERTA_HORAS*60;
+    return `
+    <div class="ticket ticket-col${viejo ? ' ticket-alerta' : ''}">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
         <div class="left">
           <b>#${r.id} · ${r.maquina} (${r.area})</b>
-          <div class="meta">${r.solicitante} · iniciado ${r.fecha!=='' ? r.fechaInicio+' '+r.horaInicio : '—'} · máquina sigue parada</div>
+          <div class="meta">${r.solicitante} · iniciado ${r.fechaInicio ? r.fechaInicio+' '+r.horaInicio : '—'} · máquina sigue parada · pausado ${formatoMinutos(minPausa)}${viejo ? ' · revisar' : ''} · trabajo neto ${formatoMinutos(minutosReparacionNeta(r, todayStr(), nowTimeStr()))}</div>
           <div class="tec-names">👤 trabajaron: ${(r.tecnicosHistorico&&r.tecnicosHistorico.length)? r.tecnicosHistorico.join(', ') : '—'}</div>
         </div>
         <div class="right">
@@ -1268,17 +1440,17 @@ function renderTicketLists(){
         </div>
       </div>` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   actualizarElapsed();
 }
 
 function actualizarElapsed(){
   document.querySelectorAll('.elapsed').forEach(el=>{
-    const start = new Date(el.getAttribute('data-inicio'));
-    const mins = Math.max(0, Math.round((new Date() - start)/60000));
-    const h = Math.floor(mins/60), m = mins%60;
-    el.textContent = (h>0 ? h+'h ' : '') + m + 'm reparando';
+    const r = registros.find(x=>x.id===Number(el.getAttribute('data-id')));
+    if(!r) return;
+    el.textContent = formatoMinutos(minutosReparacionNeta(r, todayStr(), nowTimeStr())) + ' reparando';
   });
 }
 
@@ -1320,7 +1492,7 @@ function renderTecnicoView(){
         <div class="tec-title">Código del solicitante</div>
         <div class="btn-row">
           <input type="text" inputmode="numeric" maxlength="4" placeholder="0000" id="codigo-${r.id}" style="max-width:110px;text-align:center;font-size:18px;letter-spacing:3px;">
-          <button class="btn-primary" onclick="confirmarLlegada(${r.id})">Confirmar llegada</button>
+          <button class="btn-primary" id="btnLlegada-${r.id}" onclick="confirmarLlegada(${r.id})">Confirmar llegada</button>
         </div>
         <div class="msg" id="codigoMsg-${r.id}"></div>
       </div>
@@ -1352,11 +1524,25 @@ function renderTecnicoView(){
 }
 
 async function confirmarLlegada(id){
+  if(confirmandoLlegada[id]) return;
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
   const input = document.getElementById('codigo-'+id);
   const val = (input.value||'').trim();
   const msgId = 'codigoMsg-'+id;
+
+  if(registros[idx].confirmadoEnSitio || registros[idx].fechaInicio){
+    showMsgIn(msgId, 'Este servicio ya está confirmado en sitio.', false);
+    return;
+  }
+  if(registros[idx].estado !== 'Asignado'){
+    showMsgIn(msgId, 'Solo se confirma llegada cuando el ticket está Asignado.', false);
+    return;
+  }
+  if(!(registros[idx].tecnicosActivos||[]).length){
+    showMsgIn(msgId, 'No hay técnicos asignados.', false);
+    return;
+  }
 
   if(val !== registros[idx].codigoConfirmacion){
     showMsgIn(msgId, 'Código incorrecto. Pídeselo de nuevo al solicitante.', false);
@@ -1365,6 +1551,13 @@ async function confirmarLlegada(id){
     return;
   }
 
+  confirmandoLlegada[id] = true;
+  const btnLlegada = document.getElementById('btnLlegada-'+id);
+  if(btnLlegada){
+    btnLlegada.disabled = true;
+    btnLlegada.textContent = 'Confirmando…';
+  }
+  try{
   const fechaInicio = todayStr();
   const horaInicio = nowTimeStr();
   const espera = diffHoursMin(registros[idx].fecha, registros[idx].horaSolicita, fechaInicio, horaInicio);
@@ -1382,6 +1575,10 @@ async function confirmarLlegada(id){
   const ok = await guardarRegistros();
   renderTecnicoView();
   if(!ok) showBanner('Se confirmó la llegada pero no se sincronizó con el guardado compartido.');
+  }finally{
+    delete confirmandoLlegada[id];
+    actualizarControlesGuardado();
+  }
 }
 
 function leerTecnicosSeleccionados(id){
@@ -1451,12 +1648,14 @@ async function quitarTecnico(id, nombre){
   if(idx===-1) return;
   const restantes = (registros[idx].tecnicosActivos||[]).filter(t=>t!==nombre);
   const nuevoEstado = restantes.length===0 ? 'Pausado' : 'En reparación';
-  registros[idx] = {
+  let rec = {
     ...registros[idx],
     estado: nuevoEstado,
     tecnicosActivos: restantes,
     historial: [...registros[idx].historial, {accion: restantes.length===0 ? 'Se retiró (servicio pausado)' : 'Se retiró', tecnicos:[nombre], fecha:todayStr(), hora:nowTimeStr()}]
   };
+  if(nuevoEstado==='Pausado') rec = marcarInicioPausa(rec);
+  registros[idx] = rec;
   renderTable(); renderKpis(); renderTicketLists();
   const ok = await guardarRegistros();
   if(!ok) showBanner('Se actualizó el técnico pero no se sincronizó con el guardado compartido.');
@@ -1465,12 +1664,12 @@ async function quitarTecnico(id, nombre){
 async function pausarReparacion(id){
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
-  registros[idx] = {
+  registros[idx] = marcarInicioPausa({
     ...registros[idx],
     estado: 'Pausado',
     tecnicosActivos: [],
     historial: [...registros[idx].historial, {accion:'Pausado', tecnicos:[], fecha:todayStr(), hora:nowTimeStr()}]
-  };
+  });
   renderTable(); renderKpis(); renderTicketLists();
   const ok = await guardarRegistros();
   if(!ok) showBanner('Se pausó el servicio pero no se sincronizó con el guardado compartido.');
@@ -1481,9 +1680,11 @@ async function confirmarReanudacion(id){
   if(elegidos.length===0){ alert('Selecciona al menos un técnico.'); return; }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
+  const pausaCerrada = cerrarIntervaloPausa(registros[idx]);
   const nuevoHistorico = Array.from(new Set([...(registros[idx].tecnicosHistorico||[]), ...elegidos]));
   registros[idx] = {
     ...registros[idx],
+    ...pausaCerrada,
     estado: 'En reparación',
     tecnicosActivos: elegidos,
     tecnicosHistorico: nuevoHistorico,
@@ -1508,7 +1709,7 @@ function abrirCierre(id){
   document.getElementById('f_refacciones').value = '';
   document.getElementById('f_observaciones').value = '';
   document.getElementById('durInicio').textContent = 'Inicio: ' + rec.fechaInicio + ' ' + rec.horaInicio;
-  document.getElementById('durEspera').textContent = 'Espera previa: ' + (rec.esperaH!=null? rec.esperaH.toFixed(2)+' h' : '—');
+  document.getElementById('durEspera').textContent = 'Espera solicitud → sitio: ' + (rec.esperaH!=null? rec.esperaH.toFixed(2)+' h' : '—');
   actualizarPreviewCierre();
   document.getElementById('cierreCard').scrollIntoView({behavior:'smooth', block:'start'});
 }
@@ -1517,8 +1718,8 @@ function actualizarPreviewCierre(){
   if(!selectedTicketId) return;
   const rec = registros.find(r=>r.id===selectedTicketId);
   if(!rec) return;
-  const nowMin = diffHoursMin(rec.fechaInicio, rec.horaInicio, todayStr(), nowTimeStr());
-  document.getElementById('durBig').textContent = nowMin ? nowMin.totalH.toFixed(2)+' h' : '0.00 h';
+  const nowMin = minutosReparacionNeta(rec, todayStr(), nowTimeStr());
+  document.getElementById('durBig').textContent = (nowMin/60).toFixed(2)+' h';
 }
 
 function cancelarCierre(){
@@ -1527,6 +1728,8 @@ function cancelarCierre(){
 }
 
 async function cerrarServicio(){
+ if(cerrandoServicio) return;
+ setCerrandoServicio(true);
  try{
   if(!selectedTicketId){
     showMsgIn('cierreMsg', 'Selecciona un ticket primero.', false);
@@ -1549,10 +1752,18 @@ async function cerrarServicio(){
     return;
   }
   const rec = registros[idx];
+  if(rec.estado==='Cerrado' || rec.estado==='Liberado'){
+    showMsgIn('cierreMsg', 'Este servicio ya está cerrado.', false);
+    return;
+  }
+  if(rec.estado!=='En reparación'){
+    showMsgIn('cierreMsg', 'Solo puedes cerrar un servicio que está en reparación.', false);
+    return;
+  }
   const fechaFin = todayStr();
   const horaFin = nowTimeStr();
-  const reparacion = diffHoursMin(rec.fechaInicio, rec.horaInicio, fechaFin, horaFin);
-  if(!reparacion){
+  const netaMin = minutosReparacionNeta(rec, fechaFin, horaFin);
+  if(!rec.fechaInicio || !rec.horaInicio){
     showMsgIn('cierreMsg', 'No se pudo calcular el tiempo de reparación (revisa el inicio del ticket).', false);
     return;
   }
@@ -1565,8 +1776,11 @@ async function cerrarServicio(){
     turno: document.getElementById('f_turno').value,
     paroMaquina: document.getElementById('f_paro').value,
     bloqueoCandadeo: document.getElementById('f_bloqueo').value,
-    reparacionMin: reparacion.totalMin,
-    reparacionH: Number(reparacion.totalH.toFixed(2)),
+    reparacionMin: netaMin,
+    reparacionH: Number((netaMin/60).toFixed(2)),
+    minutosPausa: minutosPausaAcumulados(rec, fechaFin, horaFin),
+    pausaDesdeFecha: '',
+    pausaDesdeHora: '',
     mantenimiento: document.getElementById('f_mantenimiento').value,
     refacciones: document.getElementById('f_refacciones').value,
     observaciones: document.getElementById('f_observaciones').value,
@@ -1590,6 +1804,8 @@ async function cerrarServicio(){
  }catch(err){
    console.error(err);
    showMsgIn('cierreMsg', 'Ocurrió un error inesperado al guardar: ' + (err && err.message ? err.message : err), false);
+ }finally{
+   setCerrandoServicio(false);
  }
 }
 
@@ -1622,7 +1838,7 @@ function renderTable(){
       <td>${r.maquina}</td>
       <td>${r.solicitante}</td>
       <td><span class="tag ${r.prioridad}">${r.prioridad||'—'}</span></td>
-      <td>${(r.tecnicosHistorico&&r.tecnicosHistorico.length)? r.tecnicosHistorico.join(', ') : '—'}</td>
+      <td>${tecnicosVigentesTexto(r, ', ') || '—'}</td>
       <td>${r.esperaH!=null? r.esperaH.toFixed(2):'—'}</td>
       <td>${r.reparacionH!=null? r.reparacionH.toFixed(2):'—'}</td>
       <td>${r.turno||'—'}</td>
@@ -1637,6 +1853,11 @@ function renderKpis(){
   document.getElementById('kpiAsignados').textContent = registros.filter(r=>r.estado==='Asignado').length;
   document.getElementById('kpiEnCurso').textContent = registros.filter(r=>r.estado==='En reparación').length;
   document.getElementById('kpiPausados').textContent = registros.filter(r=>r.estado==='Pausado').length;
+  const pausadosViejosN = registros.filter(esPausadoViejo).length;
+  const kpiViejos = document.getElementById('kpiPausadosViejos');
+  const kpiViejosBox = document.getElementById('kpiPausadosViejosBox');
+  if(kpiViejos) kpiViejos.textContent = pausadosViejosN;
+  if(kpiViejosBox) kpiViejosBox.classList.toggle('warn', pausadosViejosN>0);
 
   const conEspera = registros.filter(r=>r.esperaH!=null);
   document.getElementById('kpiEspera').textContent = conEspera.length
@@ -1660,20 +1881,23 @@ function historialTexto(hist){
 
 function exportarCSV(){
   const headers = ['ID','ESTADO','FECHA','NO. DE DIA','NO DE SEMANA','MES','AREA','MAQUINA','SOLICITANTE',
-    'HORA SOLICITA','PRIORIDAD','FALLA','TIPO','PARO MAQUINA','TECNICOS','ASIGNADO FECHA','ASIGNADO HORA',
+    'HORA SOLICITA','PRIORIDAD','FALLA','TIPO','PARO MAQUINA','TECNICOS','TECNICOS ACTIVOS','ASIGNADO FECHA','ASIGNADO HORA',
     'CONFIRMADO EN SITIO','FECHA ENTREGA','HORA DE ENTREGA',
-    'INICIO REPARACION FECHA','INICIO REPARACION HORA','TIEMPO ESPERA (MIN)','TIEMPO ESPERA (h)',
-    'TIEMPO REPARACION (MIN)','TIEMPO REPARACION (h)','DURACION TOTAL (h)',
+    'INICIO REPARACION FECHA','INICIO REPARACION HORA','TIEMPO ESPERA (MIN) solicitud→sitio','TIEMPO ESPERA (h) solicitud→sitio',
+    'TIEMPO REPARACION (MIN)','TIEMPO REPARACION (h)','PAUSA (MIN)','DURACION TOTAL (h)',
+    'BLOQUE Y CANDADEO','FECHA LIBERADO','HORA LIBERADO',
     'PROBLEMA','MANTENIMIENTO','REFACCIONES','TURNO PRODUCCION','OBSERVACIONES','HISTORIAL'];
 
   const rows = registros.slice().reverse().map(r=>{
     const totalH = (r.esperaH!=null && r.reparacionH!=null) ? Number((r.esperaH + r.reparacionH).toFixed(2)) : '';
     return [
       r.id, r.estado, r.fecha, r.diaNombre, r.semana, r.mes, r.area, r.maquina, r.solicitante,
-      r.horaSolicita, r.prioridad, r.falla, r.tipo, r.paroMaquina, (r.tecnicosHistorico||[]).join(' / '),
+      r.horaSolicita, r.prioridad, r.falla, r.tipo, r.paroMaquina, tecnicosVigentesTexto(r, ' / '),
+      (r.tecnicosActivos||[]).join(' / '),
       r.fechaAsignado, r.horaAsignado, (r.confirmadoEnSitio ? 'Sí' : 'No'), r.fechaFin, r.horaFin,
       r.fechaInicio, r.horaInicio, r.esperaMin, r.esperaH,
-      r.reparacionMin, r.reparacionH, totalH,
+      r.reparacionMin, r.reparacionH, r.minutosPausa!=null ? r.minutosPausa : '', totalH,
+      r.bloqueoCandadeo||'', r.fechaLiberado||'', r.horaLiberado||'',
       r.problema, r.mantenimiento, r.refacciones, r.turno, r.observaciones, historialTexto(r.historial)
     ];
   });
