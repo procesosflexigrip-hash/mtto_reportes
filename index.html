@@ -449,17 +449,18 @@
 
       <div class="card">
         <h2><span class="num">📋</span> Resumen de turno (para WhatsApp)</h2>
-        <p class="hint">Arma el reporte del turno con los servicios cerrados, listo para copiar y pegar.</p>
+        <p class="hint">Arma el reporte del turno con los servicios cerrados o ya liberados. La fecha es el día en que <b>empezó</b> el turno (el 3° va de 22:00 a 07:00 del día siguiente).</p>
         <div class="grid">
           <div class="field">
             <label>Turno</label>
             <select id="r_turno"><option value="">Todos</option></select>
           </div>
           <div class="field">
-            <label>Fecha</label>
+            <label>Fecha de inicio del turno</label>
             <input type="date" id="r_fecha">
           </div>
         </div>
+        <p class="hint" id="resumenTurnoHint" style="margin-top:8px;">El 3° de una fecha incluye lo cerrado esa noche y la madrugada siguiente (hasta las 07:00).</p>
         <div class="actions">
           <button class="btn-primary" onclick="generarResumen()">Generar resumen</button>
         </div>
@@ -2034,22 +2035,60 @@ function exportarCSV(){
   URL.revokeObjectURL(url);
 }
 
-document.getElementById('r_fecha').value = todayStr();
+function minutosDeHora(hora){
+  const p = String(hora||'').split(':');
+  const h = Number(p[0]);
+  const m = Number(p[1]||0);
+  if(!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return h*60 + m;
+}
+
+function restarUnDia(fechaStr){
+  const d = new Date(fechaStr+'T00:00:00');
+  if(isNaN(d.getTime())) return '';
+  d.setDate(d.getDate()-1);
+  return String(d.getFullYear())+'-'+
+    String(d.getMonth()+1).padStart(2,'0')+'-'+
+    String(d.getDate()).padStart(2,'0');
+}
+
+function fechaTurno(fechaFin, horaFin, turno){
+  if(!fechaFin || !horaFin) return '';
+  const mins = minutosDeHora(horaFin);
+  if(mins==null) return '';
+  const t = String(turno||'');
+  const esNoche = t==='3°' || (!t && (mins>=22*60 || mins<7*60));
+  if(esNoche && mins<7*60) return restarUnDia(fechaFin);
+  return fechaFin;
+}
+
+document.getElementById('r_fecha').value = fechaTurno(todayStr(), nowTimeStr(), '') || todayStr();
+
+function etiquetaTurnoResumen(turno){
+  if(turno==='1°') return '1° (07:00–15:00)';
+  if(turno==='2°') return '2° (15:00–22:00)';
+  if(turno==='3°') return '3° (22:00–07:00)';
+  return 'todos los turnos';
+}
 
 function generarResumen(){
   const turno = document.getElementById('r_turno').value;
   const fecha = document.getElementById('r_fecha').value;
 
   const items = registros.filter(r=>{
-    if(r.estado !== 'Cerrado') return false;
+    if(r.estado!=='Cerrado' && r.estado!=='Liberado') return false;
+    if(!r.fechaFin || !r.horaFin) return false;
     if(turno && r.turno !== turno) return false;
-    if(fecha && r.fecha !== fecha) return false;
+    if(fecha){
+      const ft = fechaTurno(r.fechaFin, r.horaFin, r.turno);
+      if(ft !== fecha) return false;
+    }
     return true;
   }).slice().reverse();
 
-  const fechaLabel = fecha || 'todas las fechas';
-  const turnoLabel = turno || 'todos los turnos';
-  let texto = `*Reporte de mantenimiento — Turno ${turnoLabel}*\n*Fecha:* ${fechaLabel}\n*Servicios atendidos:* ${items.length}\n\n`;
+  const fechaLabel = fecha || 'todas las fechas de inicio de turno';
+  const turnoLabel = etiquetaTurnoResumen(turno);
+  let texto = `*Reporte de mantenimiento — Turno ${turnoLabel}*\n*Fecha (inicio del turno):* ${fechaLabel}\n*Servicios atendidos:* ${items.length}\n\n`;
 
   if(items.length===0){
     texto += 'No hay servicios cerrados con esos filtros.';
