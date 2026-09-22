@@ -1184,10 +1184,14 @@ async function guardarRegistros(){
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     if(!data || data.ok !== true){
+      const detalle = data && data.error ? data.error : 'El servidor rechazó el guardado.';
+      if(/duplicad/i.test(detalle)){
+        throw new Error('La hoja de Google tiene un registro repetido y por eso no se puede guardar nada. Avisa al administrador para que ejecute la auditoría de la hoja (auditarRegistros). Detalle: ' + detalle);
+      }
       const faltantes = data && Array.isArray(data.idsFaltantes) && data.idsFaltantes.length
         ? ' IDs faltantes: ' + data.idsFaltantes.join(', ')
         : '';
-      throw new Error((data && data.error ? data.error : 'El servidor rechazó el guardado.') + faltantes);
+      throw new Error(detalle + faltantes);
     }
     return true;
   }catch(e){
