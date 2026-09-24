@@ -1254,7 +1254,7 @@ async function crearSolicitud(){
     return;
   }
   const problema = document.getElementById('f_problema').value;
-  const servicioAbierto = registros.find(r=>
+  const servicioAbierto = normalizarTexto(maquina)==='NO APLICA' ? null : registros.find(r=>
     normalizarTexto(r.maquina)===normalizarTexto(maquina) && r.estado!=='Liberado'
   );
   if(servicioAbierto){
@@ -1422,11 +1422,16 @@ let panelOpen = null; // {id, action: 'iniciar'|'reanudar'|'agregar'}
 function tecnicosOcupados(excludeTicketId){
   const ocupados = new Set();
   registros.forEach(r=>{
-    if(r.estado==='En reparación' && r.id!==excludeTicketId){
+    if((r.estado==='Asignado' || r.estado==='En reparación') && r.id!==excludeTicketId){
       (r.tecnicosActivos||[]).forEach(t=>ocupados.add(t));
     }
   });
   return ocupados;
+}
+
+function tecnicosOcupadosEnSeleccion(id, elegidos){
+  const ocupados = tecnicosOcupados(id);
+  return (elegidos||[]).filter(t=>ocupados.has(t));
 }
 
 function renderTecCheckboxes(id, excluir){
@@ -1707,6 +1712,11 @@ function leerTecnicosSeleccionados(id){
 async function confirmarInicio(id){
   const elegidos = leerTecnicosSeleccionados(id);
   if(elegidos.length===0){ alert('Selecciona al menos un técnico.'); return; }
+  const choque = tecnicosOcupadosEnSeleccion(id, elegidos);
+  if(choque.length){
+    alert('No se puede asignar: '+choque.join(', ')+' ya está en otro servicio. Debe quedar libre primero.');
+    return;
+  }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
   const fechaAsignado = todayStr();
@@ -1729,6 +1739,11 @@ async function confirmarInicio(id){
 async function confirmarAgregar(id){
   const elegidos = leerTecnicosSeleccionados(id);
   if(elegidos.length===0){ alert('Selecciona al menos un técnico.'); return; }
+  const choque = tecnicosOcupadosEnSeleccion(id, elegidos);
+  if(choque.length){
+    alert('No se puede agregar: '+choque.join(', ')+' ya está en otro servicio. Debe quedar libre primero.');
+    return;
+  }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
   const nuevosActivos = Array.from(new Set([...registros[idx].tecnicosActivos, ...elegidos]));
@@ -1795,6 +1810,11 @@ async function pausarReparacion(id){
 async function confirmarReanudacion(id){
   const elegidos = leerTecnicosSeleccionados(id);
   if(elegidos.length===0){ alert('Selecciona al menos un técnico.'); return; }
+  const choque = tecnicosOcupadosEnSeleccion(id, elegidos);
+  if(choque.length){
+    alert('No se puede reanudar: '+choque.join(', ')+' ya está en otro servicio. Debe quedar libre primero.');
+    return;
+  }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
   const pausaCerrada = cerrarIntervaloPausa(registros[idx]);
