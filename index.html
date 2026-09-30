@@ -1254,7 +1254,7 @@ async function crearSolicitud(){
     return;
   }
   const problema = document.getElementById('f_problema').value;
-  const servicioAbierto = normalizarTexto(maquina)==='NO APLICA' ? null : registros.find(r=>
+  const servicioAbierto = normalizarTexto(maquina)==='SERVICIOS' ? null : registros.find(r=>
     normalizarTexto(r.maquina)===normalizarTexto(maquina) && r.estado!=='Liberado'
   );
   if(servicioAbierto){
