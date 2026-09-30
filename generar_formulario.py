@@ -12,7 +12,7 @@ Cada vez que agregues/quites una máquina, técnico, área, etc. en el Excel
 y se genera un captura_mantenimiento.html actualizado.
 
 Columnas esperadas en la pestaña "validacion" del Excel:
-    AREA, MAQUINA, SOLICITANTE, TECNICO, PIN, PRIORIDAD, FALLA, TIPO, PARO MAQUINA, BLOQUE Y CANDADEO
+    AREA, MAQUINA, SOLICITANTE, TECNICO, PIN, PRIORIDAD, FALLA, TIPO, PARO MAQUINA, BLOQUE Y CANDADEO, REFACCION
 (el orden no importa, los nombres de columna sí deben coincidir exactamente.
  TECNICO y PIN deben estar en la MISMA fila para cada técnico — es su PIN individual.)
 
@@ -30,7 +30,7 @@ EXCEL_PATH = sys.argv[1] if len(sys.argv) > 1 else "validacion.xlsx"
 HOJA = "validacion"
 SALIDA = "index.html"
 
-COLUMNAS_ESPERADAS = ["AREA", "MAQUINA", "SOLICITANTE", "TECNICO", "PRIORIDAD", "FALLA", "TIPO", "PARO MAQUINA", "BLOQUE Y CANDADEO"]
+COLUMNAS_ESPERADAS = ["AREA", "MAQUINA", "SOLICITANTE", "TECNICO", "PRIORIDAD", "FALLA", "TIPO", "PARO MAQUINA", "BLOQUE Y CANDADEO", "REFACCION"]
 
 print(f"Leyendo listas desde: {EXCEL_PATH} (hoja '{HOJA}')")
 df = pd.read_excel(EXCEL_PATH, sheet_name=HOJA)
@@ -57,6 +57,11 @@ for col in COLUMNAS_ESPERADAS:
 for col, vals in lists.items():
     print(f"  {col}: {len(vals)} valores")
 
+# Mantiene utilizable el cierre mientras se llena por primera vez el catálogo.
+if not lists["REFACCION"]:
+    lists["REFACCION"] = ["SIN REFACCIONES"]
+    print("  REFACCION: se usará temporalmente 'SIN REFACCIONES'; agrega las piezas reales al Excel.")
+
 # TECNICO + PIN van alineados por fila (cada técnico con su propio PIN individual)
 tecnicos_pin = []
 if "TECNICO" in df.columns and "PIN" in df.columns:
@@ -78,7 +83,7 @@ lists_js = json.dumps(lists, ensure_ascii=False)
 turnos = ["1°", "2°", "3°"]  # <-- si cambian los turnos, edita esta línea
 turnos_js = json.dumps(turnos, ensure_ascii=False)
 
-GERENTE_MANTENIMIENTO = "JORGE VEGA"  # <-- solo este solicitante puede elegir el Tipo; todos los demás quedan como CORRECTIVO
+GERENTE_MANTENIMIENTO = "JORGE ADRIAN VEGA BARON"  # <-- solo este solicitante puede elegir el Tipo; todos los demás quedan como CORRECTIVO
 
 SUPERVISOR_PIN = "2580"  # <-- CAMBIA ESTE PIN. Da acceso a asignar/cerrar servicios y ver todos los registros.
 SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzqFLePhr_RQo1aZeHO3BLJZDx6RCcmGekwBZSmhpPW0K-7FGX293qtUt1pKKDhGQjV/exec"  # <-- ya configurada
@@ -88,7 +93,7 @@ html = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
-<title>Captura de Mantenimiento — Flexigrip</title>
+<title>REGISTRO DE MANTENIMIENTO PREVENTIVO Y CORRECTIVO (FOR-MAN-01-02-03)</title>
 <style>
   :root{
     --bg: #12181f;
@@ -154,6 +159,9 @@ html = """<!DOCTYPE html>
   .kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;}
   .kpi .n{font-size:21px;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums;}
   .kpi .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-top:2px;}
+  .kpi.warn{border-color:var(--warn);}
+  .kpi.warn .n{color:var(--warn);}
+  .ticket.ticket-alerta{border-color:var(--warn);}
 
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin-bottom:18px;}
   .card h2{font-size:14px;margin:0 0 14px;text-transform:uppercase;letter-spacing:.6px;color:var(--accent2);
@@ -163,10 +171,27 @@ html = """<!DOCTYPE html>
   .card p.hint{color:var(--muted);font-size:12.5px;margin:-8px 0 16px;}
 
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px 14px;}
-  .field{display:flex;flex-direction:column;gap:5px;}
+  .field{display:flex;flex-direction:column;gap:5px;position:relative;}
   .field.span2{grid-column:span 2;}
   .field label{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;}
   .field label .req{color:var(--danger);}
+  .char-counter{font-size:11px;color:var(--muted);text-align:right;margin-top:-2px;}
+  .refacciones-editor{display:flex;flex-direction:column;gap:8px;}
+  .refaccion-row{display:grid;grid-template-columns:minmax(180px,1fr) 90px auto;gap:8px;align-items:end;}
+  .refaccion-row .field{min-width:0;}
+  .refaccion-row button{padding:10px 12px;}
+  @media(max-width:600px){
+    .refaccion-row{grid-template-columns:minmax(0,1fr) 78px auto;}
+  }
+
+  .ac-list{position:absolute;top:100%;left:0;right:0;z-index:60;display:none;margin-top:4px;
+    max-height:240px;overflow-y:auto;background:var(--panel2);border:1px solid var(--accent);
+    border-radius:8px;box-shadow:0 8px 20px rgba(0,0,0,.45);}
+  .ac-list.show{display:block;}
+  .ac-item{padding:9px 11px;font-size:14px;cursor:pointer;border-bottom:1px solid var(--line);}
+  .ac-item:last-child{border-bottom:none;}
+  .ac-item:hover, .ac-item.active{background:var(--panel);color:var(--accent);}
+  .ac-hint{padding:7px 11px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--line);}
   input, select, textarea{
     background:var(--panel2);border:1px solid var(--line);color:var(--text);
     border-radius:8px;padding:10px 11px;font-size:14.5px;font-family:inherit;width:100%;
@@ -213,6 +238,10 @@ html = """<!DOCTYPE html>
   .msg{font-size:13px;padding:10px 14px;border-radius:8px;margin-top:12px;display:none;}
   .msg.ok{display:block;background:rgba(76,175,125,.12);border:1px solid var(--ok);color:#b6f0cf;}
   .msg.err{display:block;background:rgba(239,91,91,.12);border:1px solid var(--danger);color:#ffc7c7;}
+  .aviso-toast{position:fixed;bottom:20px;right:16px;z-index:80;max-width:360px;background:var(--panel2);
+    border:1px solid var(--accent2);color:var(--text);padding:12px 16px;border-radius:8px;font-size:13px;
+    display:none;}
+  .aviso-toast.show{display:block;}
 
   .pin-gate{max-width:340px;margin:10px auto;text-align:center;padding:26px 20px;}
   .pin-gate .lock{font-size:32px;margin-bottom:6px;}
@@ -286,12 +315,13 @@ html = """<!DOCTYPE html>
 </head>
 <body>
 <div class="wrap">
+<div class="aviso-toast" id="avisoToast"></div>
 
   <header class="top">
     <div class="brand">
       <div class="mark">FG</div>
       <div>
-        <h1>Captura de Servicios — Mantenimiento</h1>
+        <h1>REGISTRO DE MANTENIMIENTO PREVENTIVO Y CORRECTIVO (FOR-MAN-01-02-03)</h1>
       </div>
     </div>
     <div class="clock">
@@ -310,7 +340,7 @@ html = """<!DOCTYPE html>
       </button>
       <button class="role-card" onclick="irA('supervisor')">
         <span class="ic">👷</span>
-        <span class="t">Supervisor</span>
+        <span class="t">Supervisor mantenimiento</span>
         <span class="s">Asignar técnicos y cerrar servicios — requiere PIN</span>
       </button>
       <button class="role-card" onclick="irA('tecnico')">
@@ -341,13 +371,12 @@ html = """<!DOCTYPE html>
         </div>
         <div class="field">
           <label>Máquina <span class="req">*</span></label>
-          <input type="text" id="f_maquina" list="dl_maquina" placeholder="Escribe o elige…" required>
-          <datalist id="dl_maquina"></datalist>
+          <select id="f_maquina" required><option value="">Selecciona…</option></select>
         </div>
         <div class="field">
           <label>Solicitante <span class="req">*</span></label>
-          <input type="text" id="f_solicitante" list="dl_solicitante" placeholder="Escribe el nombre…" required oninput="chequearGerente()">
-          <datalist id="dl_solicitante"></datalist>
+          <input type="text" id="f_solicitante" placeholder="Escribe el nombre…" required autocomplete="off" oninput="chequearGerente()">
+          <div class="ac-list" id="ac_f_solicitante"></div>
         </div>
         <div class="field">
           <label>Prioridad <span class="req">*</span></label>
@@ -359,11 +388,12 @@ html = """<!DOCTYPE html>
         </div>
         <div class="field span2">
           <label>Problema reportado</label>
-          <textarea id="f_problema" placeholder="Descripción de la falla / motivo de la solicitud"></textarea>
+          <textarea id="f_problema" maxlength="200" placeholder="Descripción de la falla / motivo de la solicitud" oninput="actualizarContadorProblema()"></textarea>
+          <div class="char-counter" id="problemaContador">0/200</div>
         </div>
       </div>
       <div class="actions">
-        <button class="btn-primary" onclick="crearSolicitud()">Enviar solicitud</button>
+        <button class="btn-primary" id="btnEnviarSolicitud" onclick="crearSolicitud()">Enviar solicitud</button>
         <button class="btn-ghost" onclick="limpiarFormSolicitud()">Limpiar</button>
       </div>
       <div class="msg" id="solMsg"></div>
@@ -383,15 +413,16 @@ html = """<!DOCTYPE html>
 
     <div class="card">
       <h2><span class="num">✔</span> Liberar un servicio ya cerrado</h2>
-      <p class="hint">Si un técnico ya cerró un servicio que tú reportaste, confirma aquí que la máquina quedó funcionando.</p>
+      <p class="hint">Aquí aparecen todos los servicios cerrados. Escribe y selecciona tu nombre antes de liberar el área.</p>
       <div class="grid">
         <div class="field">
-          <label>Tu nombre (como lo pusiste al reportar)</label>
-          <input type="text" id="lib_nombre" list="dl_solicitante" placeholder="Escribe tu nombre…" oninput="renderLiberarLista()">
+          <label>Nombre de quien libera <span class="req">*</span></label>
+          <input type="text" id="lib_nombre" placeholder="Escribe y selecciona tu nombre…" autocomplete="off">
+          <div class="ac-list" id="ac_lib_nombre"></div>
         </div>
       </div>
       <div class="ticket-list" id="liberarLista" style="margin-top:14px;"></div>
-      <div class="empty" id="liberarEmpty" style="display:none;">No tienes servicios cerrados pendientes de liberar.</div>
+      <div class="empty" id="liberarEmpty" style="display:none;">No hay servicios cerrados pendientes de liberar.</div>
     </div>
   </div>
 
@@ -417,6 +448,7 @@ html = """<!DOCTYPE html>
         <div class="kpi"><div class="n" id="kpiAsignados">0</div><div class="l">Por confirmar</div></div>
         <div class="kpi"><div class="n" id="kpiEnCurso">0</div><div class="l">En reparación</div></div>
         <div class="kpi"><div class="n" id="kpiPausados">0</div><div class="l">Pausados</div></div>
+        <div class="kpi" id="kpiPausadosViejosBox"><div class="n" id="kpiPausadosViejos">0</div><div class="l">Pausados &gt; 8 h</div></div>
         <div class="kpi"><div class="n" id="kpiEspera">0.0 h</div><div class="l">Espera promedio</div></div>
         <div class="kpi"><div class="n" id="kpiReparacion">0.0 h</div><div class="l">Reparación promedio</div></div>
       </div>
@@ -437,7 +469,7 @@ html = """<!DOCTYPE html>
         <div class="ticket-list" id="ticketListProg"></div>
         <div class="empty" id="emptyProg" style="display:none;">Nadie está reparando algo en este momento.</div>
 
-        <div class="subhead"><span class="dot" style="background:var(--muted);"></span> Pausados — esperando retomar</div>
+        <div class="subhead"><span class="dot" style="background:var(--muted);"></span> Pausados — esperando retomar <span id="pausadosViejosHint" style="text-transform:none;letter-spacing:0;font-weight:400;"></span></div>
         <div class="ticket-list" id="ticketListPaused"></div>
         <div class="empty" id="emptyPaused" style="display:none;">No hay servicios pausados.</div>
       </div>
@@ -475,8 +507,12 @@ html = """<!DOCTYPE html>
             <textarea id="f_mantenimiento" placeholder="Trabajo / reparación efectuada"></textarea>
           </div>
           <div class="field span2">
-            <label>Refacciones utilizadas</label>
-            <textarea id="f_refacciones" placeholder="Piezas o refacciones usadas"></textarea>
+            <label>Refacciones utilizadas <span class="req">*</span></label>
+            <div class="refacciones-editor" id="refaccionesEditor"></div>
+            <div class="actions" style="margin-top:8px;">
+              <button type="button" class="btn-ghost" onclick="agregarRefaccion()">+ Agregar refacción</button>
+            </div>
+            <p class="hint" style="margin:4px 0 0;">Selecciona una refacción de la lista e indica la cantidad. Si no se usaron piezas, elige “SIN REFACCIONES”.</p>
           </div>
           <div class="field span2">
             <label>Observaciones</label>
@@ -488,14 +524,14 @@ html = """<!DOCTYPE html>
         <div class="duration-box">
           <div>
             <div class="big" id="durBig">0.00 h</div>
-            <div class="sub">Tiempo de reparación (inicio → ahora)</div>
+            <div class="sub">Tiempo de reparación (pausas descontadas)</div>
           </div>
-          <div class="pill" id="durEspera">Espera previa: —</div>
+          <div class="pill" id="durEspera">Espera solicitud → sitio: —</div>
           <div class="pill" id="durInicio">Inicio: —</div>
         </div>
 
         <div class="actions">
-          <button class="btn-primary" onclick="cerrarServicio()">Guardar cierre</button>
+          <button class="btn-primary" id="btnGuardarCierre" onclick="cerrarServicio()">Guardar cierre</button>
           <button class="btn-ghost" onclick="cancelarCierre()">Cancelar</button>
         </div>
         <div class="msg" id="cierreMsg"></div>
@@ -503,17 +539,18 @@ html = """<!DOCTYPE html>
 
       <div class="card">
         <h2><span class="num">📋</span> Resumen de turno (para WhatsApp)</h2>
-        <p class="hint">Arma el reporte del turno con los servicios cerrados, listo para copiar y pegar.</p>
+        <p class="hint">Arma el reporte del turno con los servicios cerrados o ya liberados. La fecha es el día en que <b>empezó</b> el turno (el 3° va de 22:00 a 07:00 del día siguiente).</p>
         <div class="grid">
           <div class="field">
             <label>Turno</label>
             <select id="r_turno"><option value="">Todos</option></select>
           </div>
           <div class="field">
-            <label>Fecha</label>
+            <label>Fecha de inicio del turno</label>
             <input type="date" id="r_fecha">
           </div>
         </div>
+        <p class="hint" id="resumenTurnoHint" style="margin-top:8px;">El 3° de una fecha incluye lo cerrado esa noche y la madrugada siguiente (hasta las 07:00).</p>
         <div class="actions">
           <button class="btn-primary" onclick="generarResumen()">Generar resumen</button>
         </div>
@@ -538,7 +575,7 @@ html = """<!DOCTYPE html>
             <thead>
               <tr>
                 <th>ID</th><th>Estado</th><th>Fecha sol.</th><th>Área</th><th>Máquina</th><th>Solicitante</th>
-                <th>Prioridad</th><th>Técnicos</th><th>Espera (h)</th><th>Reparación (h)</th><th>Turno</th><th>Paro</th>
+                <th>Prioridad</th><th>Técnicos vigentes</th><th>Espera sol.→sitio (h)</th><th>Reparación (h)</th><th>Turno</th><th>Paro</th>
               </tr>
             </thead>
             <tbody id="tbody"></tbody>
@@ -617,19 +654,143 @@ function populateSelect(elId, values){
     el.appendChild(opt);
   });
 }
-function populateDatalist(dlId, values){
-  const dl = document.getElementById(dlId);
-  values.forEach(v=>{
-    const opt = document.createElement('option');
-    opt.value = v;
-    dl.appendChild(opt);
+const AC_MAX_SUGERENCIAS = 60;
+
+function normalizarTexto(valor){
+  return String(valor==null?'':valor)
+    .normalize('NFD')
+    .replace(/[\\u0300-\\u036f]/g, '')
+    .toUpperCase()
+    .trim();
+}
+
+function escapeAttr(valor){
+  return String(valor==null?'':valor)
+    .replace(/&/g,'&amp;')
+    .replace(/"/g,'&quot;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;');
+}
+
+function valorCanonicoLista(valor, lista){
+  const v = String(valor==null?'':valor).trim();
+  if(!v) return v;
+  const clave = normalizarTexto(v);
+  const hit = (lista||[]).find(x=>normalizarTexto(x)===clave);
+  return hit || v;
+}
+
+function valorEnLista(valor, lista){
+  const clave = normalizarTexto(valor);
+  return !!clave && (lista||[]).some(x=>normalizarTexto(x)===clave);
+}
+
+// Sustituye al <datalist> nativo: los navegadores filtran solo por el inicio del
+// texto y con listas largas a veces no despliegan nada.
+function initAutocomplete(inputId, values){
+  const input = document.getElementById(inputId);
+  const lista = document.getElementById('ac_' + inputId);
+  if(!input || !lista) return;
+
+  const opciones = (values||[]).map(v=>({texto:String(v), clave:normalizarTexto(v)}));
+  let visibles = [];
+  let activo = -1;
+  let suprimirInput = false;
+  let totalCoincidencias = 0;
+
+  function cerrar(){
+    lista.classList.remove('show');
+    lista.innerHTML = '';
+    visibles = [];
+    activo = -1;
+  }
+
+  function pintar(){
+    lista.innerHTML = '';
+    visibles.forEach((o,i)=>{
+      const item = document.createElement('div');
+      item.className = 'ac-item' + (i===activo ? ' active' : '');
+      item.textContent = o.texto;
+      item.setAttribute('data-idx', i);
+      lista.appendChild(item);
+    });
+    if(totalCoincidencias > visibles.length){
+      const hint = document.createElement('div');
+      hint.className = 'ac-hint';
+      hint.textContent = 'Mostrando ' + visibles.length + ' de ' + totalCoincidencias + ' — escribe más para afinar.';
+      lista.appendChild(hint);
+    }
+    lista.classList.add('show');
+  }
+
+  function abrir(){
+    const q = normalizarTexto(input.value);
+    const coincidencias = q ? opciones.filter(o=>o.clave.includes(q)) : opciones;
+    totalCoincidencias = coincidencias.length;
+    visibles = coincidencias.slice(0, AC_MAX_SUGERENCIAS);
+    activo = -1;
+    if(visibles.length === 0){ cerrar(); return; }
+    pintar();
+  }
+
+  function scrollActivo(){
+    const el = lista.querySelector('.ac-item.active');
+    if(el && el.scrollIntoView) el.scrollIntoView({block:'nearest'});
+  }
+
+  function elegir(i){
+    const o = visibles[i];
+    if(!o) return;
+    input.value = o.texto;
+    cerrar();
+    suprimirInput = true;
+    input.dispatchEvent(new Event('input', {bubbles:true}));
+    suprimirInput = false;
+  }
+
+  input.addEventListener('input', ()=>{ if(!suprimirInput) abrir(); });
+  input.addEventListener('focus', abrir);
+  input.addEventListener('blur', ()=>{
+    const canon = valorCanonicoLista(input.value, values);
+    if(canon !== input.value) input.value = canon;
+    setTimeout(cerrar, 150);
+  });
+
+  input.addEventListener('keydown', e=>{
+    if(!lista.classList.contains('show')){
+      if(e.key === 'ArrowDown'){ e.preventDefault(); abrir(); }
+      return;
+    }
+    if(e.key === 'ArrowDown'){
+      e.preventDefault();
+      activo = Math.min(activo + 1, visibles.length - 1);
+      pintar(); scrollActivo();
+    }else if(e.key === 'ArrowUp'){
+      e.preventDefault();
+      activo = Math.max(activo - 1, 0);
+      pintar(); scrollActivo();
+    }else if(e.key === 'Enter'){
+      if(activo >= 0){ e.preventDefault(); elegir(activo); }
+    }else if(e.key === 'Escape'){
+      cerrar();
+    }
+  });
+
+  lista.addEventListener('mousedown', e=>{ e.preventDefault(); });
+  lista.addEventListener('click', e=>{
+    const item = e.target.closest ? e.target.closest('.ac-item') : null;
+    if(!item) return;
+    elegir(Number(item.getAttribute('data-idx')));
   });
 }
 
 const TECNICOS = LISTS.TECNICO; // roster de técnicos de mantenimiento
 const TECNICOS_PIN = LISTS.TECNICOS_PIN || []; // [{nombre, pin}, ...]
+const PROBLEMA_MAX = 200;
+let refaccionesCierre = [];
 
 populateSelect('f_area', LISTS.AREA);
+populateSelect('f_maquina', LISTS.MAQUINA);
 populateSelect('f_prioridad', LISTS.PRIORIDAD);
 populateSelect('f_falla', LISTS.FALLA);
 populateSelect('f_tipo', LISTS.TIPO);
@@ -637,12 +798,89 @@ populateSelect('f_paro', LISTS['PARO MAQUINA']);
 populateSelect('f_bloqueo', LISTS['BLOQUE Y CANDADEO']);
 populateSelect('f_turno', TURNOS);
 populateSelect('r_turno', TURNOS);
-populateDatalist('dl_maquina', LISTS.MAQUINA);
-populateDatalist('dl_solicitante', LISTS.SOLICITANTE);
+initAutocomplete('f_solicitante', LISTS.SOLICITANTE);
+initAutocomplete('lib_nombre', LISTS.SOLICITANTE);
+
+function actualizarContadorProblema(){
+  const campo = document.getElementById('f_problema');
+  const contador = document.getElementById('problemaContador');
+  if(campo) campo.maxLength = PROBLEMA_MAX;
+  if(contador) contador.textContent = (campo ? campo.value.length : 0) + '/' + PROBLEMA_MAX;
+}
+
+function crearRefaccionVacia(){
+  return {nombre:'', cantidad:1};
+}
+
+function renderRefaccionesEditor(){
+  const box = document.getElementById('refaccionesEditor');
+  if(!box) return;
+  if(refaccionesCierre.length===0) refaccionesCierre = [crearRefaccionVacia()];
+  box.innerHTML = refaccionesCierre.map((r,i)=>`
+    <div class="refaccion-row">
+      <div class="field">
+        <label>Refacción ${i+1}</label>
+        <input type="text" id="ref_nombre_${i}" value="${escapeAttr(r.nombre||'')}" placeholder="Escribe y selecciona…" autocomplete="off" oninput="actualizarRefaccionNombre(${i},this.value)">
+        <div class="ac-list" id="ac_ref_nombre_${i}"></div>
+      </div>
+      <div class="field">
+        <label>Cantidad</label>
+        <input type="number" min="1" step="1" value="${Number(r.cantidad)||1}" oninput="actualizarRefaccionCantidad(${i},this.value)">
+      </div>
+      <button type="button" class="btn-ghost" onclick="quitarRefaccion(${i})" title="Quitar refacción">Quitar</button>
+    </div>
+  `).join('');
+  refaccionesCierre.forEach((_,i)=>initAutocomplete('ref_nombre_'+i, LISTS.REFACCION||[]));
+}
+
+function actualizarRefaccionNombre(i, valor){
+  if(refaccionesCierre[i]) refaccionesCierre[i].nombre = valor;
+}
+
+function actualizarRefaccionCantidad(i, valor){
+  if(refaccionesCierre[i]) refaccionesCierre[i].cantidad = valor;
+}
+
+function agregarRefaccion(){
+  refaccionesCierre.push(crearRefaccionVacia());
+  renderRefaccionesEditor();
+}
+
+function quitarRefaccion(i){
+  refaccionesCierre.splice(i,1);
+  if(refaccionesCierre.length===0) refaccionesCierre.push(crearRefaccionVacia());
+  renderRefaccionesEditor();
+}
+
+function validarRefaccionesCierre(){
+  const resultado = [];
+  for(let i=0;i<refaccionesCierre.length;i++){
+    const fila = refaccionesCierre[i];
+    const nombre = valorCanonicoLista(fila.nombre, LISTS.REFACCION||[]);
+    const cantidad = Number(fila.cantidad);
+    if(!valorEnLista(nombre, LISTS.REFACCION||[])){
+      return {ok:false, error:'Selecciona una refacción válida de la lista en la fila '+(i+1)+'.'};
+    }
+    if(!Number.isInteger(cantidad) || cantidad<1){
+      return {ok:false, error:'La cantidad de la refacción '+(i+1)+' debe ser un número entero mayor o igual a 1.'};
+    }
+    resultado.push({nombre, cantidad});
+  }
+  return {ok:true, refacciones:resultado};
+}
+
+function refaccionesTexto(valor){
+  if(Array.isArray(valor)){
+    return valor.map(r=>(r.nombre||'sin nombre')+' x'+(r.cantidad||0)).join(' / ');
+  }
+  return valor || '';
+}
 
 function todayStr(){
   const d = new Date();
-  return d.toISOString().slice(0,10);
+  return String(d.getFullYear())+'-'+
+    String(d.getMonth()+1).padStart(2,'0')+'-'+
+    String(d.getDate()).padStart(2,'0');
 }
 function nowTimeStr(){
   const d = new Date();
@@ -673,6 +911,7 @@ function validarPinSupervisor(){
     supervisorUnlocked = true;
     document.getElementById('pinGateSupervisor').style.display = 'none';
     document.getElementById('supervisorContent').style.display = 'block';
+    pedirPermisoAvisos();
     renderTicketLists();
   }else{
     msg.className = 'msg err';
@@ -691,6 +930,7 @@ function validarPinTecnico(){
     document.getElementById('pinGateTecnico').style.display = 'none';
     document.getElementById('tecnicoContent').style.display = 'block';
     document.getElementById('tecnicoSaludoNombre').textContent = encontrado.nombre;
+    pedirPermisoAvisos();
     renderTecnicoView();
   }else{
     msg.className = 'msg err';
@@ -730,6 +970,92 @@ function diffHoursMin(fechaA, horaA, fechaB, horaB){
   };
 }
 
+function minutosEntre(fechaA, horaA, fechaB, horaB){
+  const d = diffHoursMin(fechaA, horaA, fechaB, horaB);
+  return d ? d.totalMin : 0;
+}
+
+const PAUSA_ALERTA_HORAS = 8;
+
+function inicioPausaAbierta(r){
+  if(r.pausaDesdeFecha && r.pausaDesdeHora){
+    return {fecha: r.pausaDesdeFecha, hora: r.pausaDesdeHora};
+  }
+  if(r.estado!=='Pausado') return null;
+  const hist = r.historial||[];
+  for(let i=hist.length-1;i>=0;i--){
+    const a = (hist[i].accion||'').toLowerCase();
+    if(a==='pausado' || a.indexOf('pausado')>=0){
+      return {fecha: hist[i].fecha, hora: hist[i].hora};
+    }
+  }
+  return null;
+}
+
+function minutosPausadoAbierto(r){
+  const inicio = inicioPausaAbierta(r);
+  if(!inicio) return 0;
+  return minutosEntre(inicio.fecha, inicio.hora, todayStr(), nowTimeStr());
+}
+
+function esPausadoViejo(r){
+  return r.estado==='Pausado' && minutosPausadoAbierto(r) >= PAUSA_ALERTA_HORAS*60;
+}
+
+function minutosPausaAcumulados(r, hastaFecha, hastaHora){
+  let min = r.minutosPausa || 0;
+  const inicio = (r.estado==='Pausado') ? inicioPausaAbierta(r) : (r.pausaDesdeFecha && r.pausaDesdeHora ? {fecha:r.pausaDesdeFecha, hora:r.pausaDesdeHora} : null);
+  if(inicio){
+    min += minutosEntre(inicio.fecha, inicio.hora, hastaFecha, hastaHora);
+  }
+  return min;
+}
+
+function minutosReparacionNeta(r, hastaFecha, hastaHora){
+  if(!r.fechaInicio || !r.horaInicio) return 0;
+  const wall = minutosEntre(r.fechaInicio, r.horaInicio, hastaFecha, hastaHora);
+  return Math.max(0, wall - minutosPausaAcumulados(r, hastaFecha, hastaHora));
+}
+
+function formatoMinutos(mins){
+  const h = Math.floor(mins/60), m = mins%60;
+  return (h>0 ? h+'h ' : '') + m + 'm';
+}
+
+function marcarInicioPausa(rec){
+  if(rec.pausaDesdeFecha) return rec;
+  return {
+    ...rec,
+    pausaDesdeFecha: todayStr(),
+    pausaDesdeHora: nowTimeStr()
+  };
+}
+
+function cerrarIntervaloPausa(rec){
+  let extra = 0;
+  let desdeFecha = rec.pausaDesdeFecha;
+  let desdeHora = rec.pausaDesdeHora;
+  if((!desdeFecha || !desdeHora) && rec.estado==='Pausado'){
+    extra = minutosPausaAcumulados({...rec, minutosPausa:0}, todayStr(), nowTimeStr());
+  }else if(desdeFecha && desdeHora){
+    extra = minutosEntre(desdeFecha, desdeHora, todayStr(), nowTimeStr());
+  }
+  return {
+    minutosPausa: (rec.minutosPausa||0) + extra,
+    pausaDesdeFecha: '',
+    pausaDesdeHora: ''
+  };
+}
+
+function tecnicosVigentesTexto(r, sep){
+  const joiner = sep || ', ';
+  if(r.estado==='Pendiente') return '';
+  if(r.estado==='Asignado' || r.estado==='En reparación'){
+    return (r.tecnicosActivos||[]).join(joiner);
+  }
+  return (r.tecnicosHistorico||[]).join(joiner);
+}
+
 function showMsgIn(elId, text, ok){
   const el = document.getElementById(elId);
   el.className = 'msg ' + (ok?'ok':'err');
@@ -737,50 +1063,232 @@ function showMsgIn(elId, text, ok){
   setTimeout(()=>{ el.className='msg'; }, 4000);
 }
 
-let storageAvailable = true;
+let storageAvailable = false;
+let creandoSolicitud = false;
+let cerrandoServicio = false;
+const confirmandoLlegada = {};
 
 function urlConfigurada(){
   return SHEET_WEBAPP_URL && !SHEET_WEBAPP_URL.includes('PEGA_AQUI');
 }
 
+const ACCIONES_QUE_GUARDAN = [
+  'crearSolicitud(', 'liberarServicio(', 'confirmarLlegada(',
+  'confirmarInicio(', 'confirmarAgregar(', 'cancelarAsignacion(',
+  'quitarTecnico(', 'pausarReparacion(', 'confirmarReanudacion(',
+  'cerrarServicio('
+];
+
+function actualizarControlesGuardado(){
+  document.querySelectorAll('button[onclick]').forEach(btn=>{
+    const accion = btn.getAttribute('onclick') || '';
+    if(ACCIONES_QUE_GUARDAN.some(nombre=>accion.includes(nombre))){
+      if(accion.includes('crearSolicitud(') && creandoSolicitud){
+        btn.disabled = true;
+        return;
+      }
+      if(accion.includes('cerrarServicio(') && cerrandoServicio){
+        btn.disabled = true;
+        return;
+      }
+      if(accion.includes('confirmarLlegada(') && Object.keys(confirmandoLlegada).length){
+        const m = accion.match(/confirmarLlegada\\((\\d+)\\)/);
+        if(m && confirmandoLlegada[m[1]]){
+          btn.disabled = true;
+          return;
+        }
+      }
+      btn.disabled = !storageAvailable;
+      btn.title = storageAvailable ? '' : 'Sin conexión segura con Google Sheets. Actualiza la página.';
+    }
+  });
+}
+
+function setEnviandoSolicitud(activo){
+  creandoSolicitud = activo;
+  const btn = document.getElementById('btnEnviarSolicitud');
+  if(!btn) return;
+  if(activo){
+    btn.disabled = true;
+    btn.textContent = 'Enviando…';
+    btn.title = 'Espera a que termine de guardarse.';
+  }else{
+    btn.textContent = 'Enviar solicitud';
+    btn.disabled = !storageAvailable;
+    btn.title = storageAvailable ? '' : 'Sin conexión segura con Google Sheets. Actualiza la página.';
+  }
+}
+
+function setCerrandoServicio(activo){
+  cerrandoServicio = activo;
+  const btn = document.getElementById('btnGuardarCierre');
+  if(btn){
+    if(activo){
+      btn.disabled = true;
+      btn.textContent = 'Guardando…';
+    }else{
+      btn.textContent = 'Guardar cierre';
+      btn.disabled = !storageAvailable;
+      btn.title = storageAvailable ? '' : 'Sin conexión segura con Google Sheets. Actualiza la página.';
+    }
+  }
+  actualizarControlesGuardado();
+}
+
+function vistaSupervisorOTecnico(){
+  const vs = document.getElementById('viewSupervisor');
+  const vt = document.getElementById('viewTecnico');
+  return (vs && vs.classList.contains('active')) || (vt && vt.classList.contains('active'));
+}
+
+function firmaAvisos(regs){
+  const pendientes = (regs||[]).filter(r=>r.estado==='Pendiente').map(r=>r.id);
+  const asignados = {};
+  (regs||[]).filter(r=>r.estado==='Asignado').forEach(r=>{
+    (r.tecnicosActivos||[]).forEach(n=>{
+      if(!asignados[n]) asignados[n] = [];
+      asignados[n].push(r.id);
+    });
+  });
+  return {pendientes, asignados};
+}
+
+function pedirPermisoAvisos(){
+  if(typeof Notification === 'undefined') return;
+  if(Notification.permission === 'default'){
+    Notification.requestPermission().catch(()=>{});
+  }
+}
+
+function sonarAviso(){
+  try{
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if(!Ctx) return;
+    const ctx = new Ctx();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.08, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+    o.start();
+    o.stop(ctx.currentTime + 0.2);
+  }catch(e){}
+}
+
+function mostrarAvisoLocal(texto){
+  const el = document.getElementById('avisoToast');
+  if(el){
+    el.textContent = texto;
+    el.classList.add('show');
+    setTimeout(()=>{ el.classList.remove('show'); }, 6000);
+  }
+  sonarAviso();
+  if(typeof Notification !== 'undefined' && Notification.permission === 'granted'){
+    try{ new Notification('REGISTRO DE MANTENIMIENTO PREVENTIVO Y CORRECTIVO (FOR-MAN-01-02-03)', {body: texto}); }catch(e){}
+  }
+}
+
+function aplicarAvisosLocales(prev, next){
+  if(!prev || !next) return;
+  if(supervisorUnlocked){
+    const vistos = new Set(prev.pendientes||[]);
+    (next.pendientes||[]).forEach(id=>{
+      if(!vistos.has(id)){
+        const r = registros.find(x=>x.id===id);
+        const det = r ? (r.maquina||'') + (r.area ? ' ('+r.area+')' : '') : '';
+        mostrarAvisoLocal('Nuevo reporte #' + id + (det ? ' · '+det : ''));
+      }
+    });
+  }
+  if(tecnicoUnlocked && tecnicoActualNombre){
+    const vistos = new Set((prev.asignados && prev.asignados[tecnicoActualNombre]) || []);
+    const actuales = (next.asignados && next.asignados[tecnicoActualNombre]) || [];
+    actuales.forEach(id=>{
+      if(!vistos.has(id)){
+        const r = registros.find(x=>x.id===id);
+        const det = r ? (r.maquina||'') : '';
+        mostrarAvisoLocal('Te asignaron el servicio #' + id + (det ? ' · '+det : ''));
+      }
+    });
+  }
+}
+
+let snapshotAvisos = null;
+
 async function cargarRegistros(silent){
   if(!urlConfigurada()){
     storageAvailable = false;
-    showBanner('Este formulario aún no está conectado a Google Sheets. Configura SHEET_WEBAPP_URL en el archivo (ver instrucciones) para que el guardado sea permanente y compartido.');
+    actualizarControlesGuardado();
+    if(!silent){
+      showBanner('Este formulario aún no está conectado a Google Sheets. Configura SHEET_WEBAPP_URL en el archivo (ver instrucciones) para que el guardado sea permanente y compartido.');
+    }
     renderTable();
     renderKpis();
+    renderLiberarLista();
     if(supervisorUnlocked) renderTicketLists();
     if(tecnicoUnlocked) renderTecnicoView();
     return;
   }
   try{
     const res = await fetch(SHEET_WEBAPP_URL, {method:'GET'});
+    if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    registros = Array.isArray(data) ? data : [];
+    if(!Array.isArray(data)){
+      throw new Error('El servidor no devolvió una lista válida de registros.');
+    }
+    registros = data;
     storageAvailable = true;
   }catch(e){
+    storageAvailable = false;
     console.error(e);
-    showBanner('No se pudo cargar desde Google Sheets: ' + (e && e.message ? e.message : e));
+    showBanner('No se pudo cargar desde Google Sheets. El guardado está bloqueado para proteger los registros. Detalle: ' + (e && e.message ? e.message : e));
   }
+  const nextSnap = firmaAvisos(registros);
+  if(silent && snapshotAvisos){
+    aplicarAvisosLocales(snapshotAvisos, nextSnap);
+  }
+  snapshotAvisos = nextSnap;
   renderTable();
   renderKpis();
+  renderLiberarLista();
   if(supervisorUnlocked) renderTicketLists();
   if(tecnicoUnlocked) renderTecnicoView();
+  actualizarControlesGuardado();
 }
 
 async function guardarRegistros(){
   if(!urlConfigurada()){
+    showBanner('No se puede guardar: falta configurar la conexión con Google Sheets.');
+    return false;
+  }
+  if(!storageAvailable){
+    showBanner('Guardado bloqueado para proteger los datos: primero actualiza y confirma que los registros cargan desde Google Sheets.');
     return false;
   }
   try{
-    await fetch(SHEET_WEBAPP_URL, {
+    const res = await fetch(SHEET_WEBAPP_URL, {
       method: 'POST',
       body: JSON.stringify(registros)
     });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if(!data || data.ok !== true){
+      const detalle = data && data.error ? data.error : 'El servidor rechazó el guardado.';
+      if(/duplicad/i.test(detalle)){
+        throw new Error('La hoja de Google tiene un registro repetido y por eso no se puede guardar nada. Avisa al administrador para que ejecute la auditoría de la hoja (auditarRegistros). Detalle: ' + detalle);
+      }
+      const faltantes = data && Array.isArray(data.idsFaltantes) && data.idsFaltantes.length
+        ? ' IDs faltantes: ' + data.idsFaltantes.join(', ')
+        : '';
+      throw new Error(detalle + faltantes);
+    }
     return true;
   }catch(e){
+    storageAvailable = false;
+    actualizarControlesGuardado();
     console.error('Error guardando', e);
-    showBanner('No se pudo sincronizar con Google Sheets: ' + (e && e.message ? e.message : e));
+    showBanner('No se guardó ningún cambio. Se bloquearon las acciones para proteger los registros. Actualiza la página. Detalle: ' + (e && e.message ? e.message : e));
     return false;
   }
 }
@@ -808,6 +1316,8 @@ function nextId(){
 }
 
 async function crearSolicitud(){
+  if(creandoSolicitud) return;
+  setEnviandoSolicitud(true);
  try{
   const required = ['f_area','f_maquina','f_solicitante','f_prioridad'];
   for(const id of required){
@@ -827,6 +1337,24 @@ async function crearSolicitud(){
   }
   const tipoFinal = esGerente ? document.getElementById('f_tipo').value : 'CORRECTIVO';
 
+  const maquina = document.getElementById('f_maquina').value;
+  if(!valorEnLista(maquina, LISTS.MAQUINA)){
+    showMsgIn('solMsg', 'Selecciona una máquina válida de la lista.', false);
+    document.getElementById('f_maquina').focus();
+    return;
+  }
+  const problema = document.getElementById('f_problema').value;
+  const servicioAbierto = normalizarTexto(maquina)==='SERVICIOS' ? null : registros.find(r=>
+    normalizarTexto(r.maquina)===normalizarTexto(maquina) && r.estado!=='Liberado'
+  );
+  if(servicioAbierto){
+    const ayuda = servicioAbierto.estado==='Cerrado'
+      ? ' Debe liberarse antes de registrar otro.'
+      : ' Debe concluirse y liberarse antes de registrar otro.';
+    showMsgIn('solMsg', 'La máquina ya tiene el servicio #'+servicioAbierto.id+' en estado “'+servicioAbierto.estado+'”.'+ayuda, false);
+    return;
+  }
+
   const fecha = todayStr();
   const horaSolicita = nowTimeStr();
   const dObj = new Date(fecha+'T00:00:00');
@@ -841,12 +1369,12 @@ async function crearSolicitud(){
     semana: isoWeek(dObj),
     mes: MESES[dObj.getMonth()],
     area: document.getElementById('f_area').value,
-    maquina: document.getElementById('f_maquina').value,
+    maquina: maquina,
     solicitante: document.getElementById('f_solicitante').value,
     horaSolicita: horaSolicita,
     prioridad: document.getElementById('f_prioridad').value,
     falla:'', tipo: tipoFinal, turno:'',
-    problema: document.getElementById('f_problema').value,
+    problema: problema,
     codigoConfirmacion: codigo,
     confirmadoEnSitio: false,
     fechaAsignado:'', horaAsignado:'',
@@ -858,6 +1386,9 @@ async function crearSolicitud(){
     paroMaquina:'',
     tecnicosActivos: [],
     tecnicosHistorico: [],
+    minutosPausa: 0,
+    pausaDesdeFecha: '',
+    pausaDesdeHora: '',
     historial: [{accion:'Solicitado', tecnicos:[], fecha, hora:horaSolicita}],
     creadoEn: new Date().toISOString()
   };
@@ -869,13 +1400,19 @@ async function crearSolicitud(){
   const ok = await guardarRegistros();
   if(ok){
     mostrarCodigoConfirmacion(id, codigo);
+    limpiarFormSolicitud();
   }else{
-    showMsgIn('solMsg', 'Solicitud #' + id + ' guardada en esta sesión, pero no se pudo sincronizar. Avisa al técnico directamente por si acaso.', false);
+    registros = registros.filter(r=>r!==rec);
+    renderTable();
+    renderKpis();
+    renderLiberarLista();
+    showMsgIn('solMsg', 'La solicitud no se guardó. Actualiza la página y vuelve a intentarlo.', false);
   }
-  limpiarFormSolicitud();
  }catch(err){
    console.error(err);
    showMsgIn('solMsg', 'Ocurrió un error inesperado: ' + (err && err.message ? err.message : err), false);
+ }finally{
+   setEnviandoSolicitud(false);
  }
 }
 
@@ -887,6 +1424,7 @@ function limpiarFormSolicitud(){
   document.getElementById('f_prioridad').value = '';
   document.getElementById('f_tipo').value = '';
   document.getElementById('campoTipoGerente').style.display = 'none';
+  actualizarContadorProblema();
 }
 
 function chequearGerente(){
@@ -910,19 +1448,9 @@ function cerrarCodigoCard(){
 }
 
 function renderLiberarLista(){
-  const nombre = document.getElementById('lib_nombre').value.trim().toUpperCase();
   const wrap = document.getElementById('liberarLista');
   const empty = document.getElementById('liberarEmpty');
-
-  if(!nombre){
-    wrap.innerHTML = '';
-    empty.style.display = 'none';
-    return;
-  }
-
-  const pendientes = registros.filter(r=>
-    r.estado==='Cerrado' && r.solicitante && r.solicitante.trim().toUpperCase()===nombre
-  );
+  const pendientes = registros.filter(r=>r.estado==='Cerrado');
 
   empty.style.display = pendientes.length ? 'none' : 'block';
   wrap.innerHTML = pendientes.map(r=>`
@@ -931,6 +1459,8 @@ function renderLiberarLista(){
         <b>#${r.id} · ${r.maquina} (${r.area})</b>
         <div class="meta">${r.problema||'sin descripción'}</div>
         <div class="meta">Mantenimiento: ${r.mantenimiento||'sin detalle'}</div>
+        <div class="meta">Refacciones: ${refaccionesTexto(r.refacciones)||'sin detalle'}</div>
+        <div class="meta">Solicitó: ${r.solicitante||'—'}</div>
         <div class="meta">Cerrado ${r.fechaFin} ${r.horaFin}</div>
       </div>
       <div class="right">
@@ -941,18 +1471,38 @@ function renderLiberarLista(){
 }
 
 async function liberarServicio(id){
+  const inputNombre = document.getElementById('lib_nombre');
+  const nombreEscrito = inputNombre.value.trim();
+  if(!valorEnLista(nombreEscrito, LISTS.SOLICITANTE)){
+    showBanner('Para liberar, escribe y selecciona un nombre válido de la lista.');
+    inputNombre.focus();
+    return;
+  }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
+  if(registros[idx].estado!=='Cerrado'){
+    showBanner('Ese servicio ya no está pendiente de liberación. Actualiza la página.');
+    return;
+  }
+  const liberadoPor = valorCanonicoLista(nombreEscrito, LISTS.SOLICITANTE);
+  inputNombre.value = liberadoPor;
   const fechaLiberado = todayStr();
   const horaLiberado = nowTimeStr();
+  const anterior = registros[idx];
   registros[idx] = {
-    ...registros[idx],
+    ...anterior,
     estado: 'Liberado',
-    fechaLiberado, horaLiberado,
-    historial: [...registros[idx].historial, {accion:'Liberado', tecnicos:[], fecha:fechaLiberado, hora:horaLiberado}]
+    fechaLiberado, horaLiberado, liberadoPor,
+    historial: [...registros[idx].historial, {accion:'Liberado', por:liberadoPor, tecnicos:[], fecha:fechaLiberado, hora:horaLiberado}]
   };
   renderTable(); renderKpis();
   const ok = await guardarRegistros();
+  if(ok){
+    inputNombre.value = '';
+  }else{
+    registros[idx] = anterior;
+    renderTable(); renderKpis();
+  }
   renderLiberarLista();
   if(!ok) showBanner('Se liberó el servicio pero no se sincronizó con el guardado compartido.');
 }
@@ -962,11 +1512,16 @@ let panelOpen = null; // {id, action: 'iniciar'|'reanudar'|'agregar'}
 function tecnicosOcupados(excludeTicketId){
   const ocupados = new Set();
   registros.forEach(r=>{
-    if(r.estado==='En reparación' && r.id!==excludeTicketId){
+    if((r.estado==='Asignado' || r.estado==='En reparación') && r.id!==excludeTicketId){
       (r.tecnicosActivos||[]).forEach(t=>ocupados.add(t));
     }
   });
   return ocupados;
+}
+
+function tecnicosOcupadosEnSeleccion(id, elegidos){
+  const ocupados = tecnicosOcupados(id);
+  return (elegidos||[]).filter(t=>ocupados.has(t));
 }
 
 function renderTecCheckboxes(id, excluir){
@@ -1041,7 +1596,7 @@ function renderTicketLists(){
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
         <div class="left">
           <b>#${r.id} · ${r.maquina} (${r.area})</b>
-          <div class="meta">${r.solicitante} · desde ${r.fechaInicio} ${r.horaInicio} · <span class="elapsed" data-inicio="${r.fechaInicio}T${r.horaInicio}:00">--</span></div>
+          <div class="meta">${r.solicitante} · desde ${r.fechaInicio} ${r.horaInicio} · <span class="elapsed" data-id="${r.id}">--</span></div>
           <div class="tec-names">👤 ${(r.tecnicosActivos&&r.tecnicosActivos.length) ? r.tecnicosActivos.map(t=>`<span class="tec-chip">${t}<button onclick="quitarTecnico(${r.id},'${t.replace(/'/g,"\\\\'")}')" title="Quitar">✕</button></span>`).join('') : '—'}</div>
         </div>
         <div class="right">
@@ -1063,12 +1618,23 @@ function renderTicketLists(){
   `).join('');
 
   document.getElementById('emptyPaused').style.display = pausados.length ? 'none' : 'block';
-  pausedWrap.innerHTML = pausados.map(r=>`
-    <div class="ticket ticket-col">
+  const pausadosViejos = pausados.filter(esPausadoViejo);
+  const hint = document.getElementById('pausadosViejosHint');
+  if(hint){
+    hint.textContent = pausadosViejos.length
+      ? ' · ' + pausadosViejos.length + ' lleva' + (pausadosViejos.length===1?'':'n') + ' más de ' + PAUSA_ALERTA_HORAS + ' h'
+      : '';
+    hint.style.color = pausadosViejos.length ? 'var(--warn)' : '';
+  }
+  pausedWrap.innerHTML = pausados.map(r=>{
+    const minPausa = minutosPausadoAbierto(r);
+    const viejo = minPausa >= PAUSA_ALERTA_HORAS*60;
+    return `
+    <div class="ticket ticket-col${viejo ? ' ticket-alerta' : ''}">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
         <div class="left">
           <b>#${r.id} · ${r.maquina} (${r.area})</b>
-          <div class="meta">${r.solicitante} · iniciado ${r.fecha!=='' ? r.fechaInicio+' '+r.horaInicio : '—'} · máquina sigue parada</div>
+          <div class="meta">${r.solicitante} · iniciado ${r.fechaInicio ? r.fechaInicio+' '+r.horaInicio : '—'} · máquina sigue parada · pausado ${formatoMinutos(minPausa)}${viejo ? ' · revisar' : ''} · trabajo neto ${formatoMinutos(minutosReparacionNeta(r, todayStr(), nowTimeStr()))}</div>
           <div class="tec-names">👤 trabajaron: ${(r.tecnicosHistorico&&r.tecnicosHistorico.length)? r.tecnicosHistorico.join(', ') : '—'}</div>
         </div>
         <div class="right">
@@ -1086,17 +1652,17 @@ function renderTicketLists(){
         </div>
       </div>` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   actualizarElapsed();
 }
 
 function actualizarElapsed(){
   document.querySelectorAll('.elapsed').forEach(el=>{
-    const start = new Date(el.getAttribute('data-inicio'));
-    const mins = Math.max(0, Math.round((new Date() - start)/60000));
-    const h = Math.floor(mins/60), m = mins%60;
-    el.textContent = (h>0 ? h+'h ' : '') + m + 'm reparando';
+    const r = registros.find(x=>x.id===Number(el.getAttribute('data-id')));
+    if(!r) return;
+    el.textContent = formatoMinutos(minutosReparacionNeta(r, todayStr(), nowTimeStr())) + ' reparando';
   });
 }
 
@@ -1138,7 +1704,7 @@ function renderTecnicoView(){
         <div class="tec-title">Código del solicitante</div>
         <div class="btn-row">
           <input type="text" inputmode="numeric" maxlength="4" placeholder="0000" id="codigo-${r.id}" style="max-width:110px;text-align:center;font-size:18px;letter-spacing:3px;">
-          <button class="btn-primary" onclick="confirmarLlegada(${r.id})">Confirmar llegada</button>
+          <button class="btn-primary" id="btnLlegada-${r.id}" onclick="confirmarLlegada(${r.id})">Confirmar llegada</button>
         </div>
         <div class="msg" id="codigoMsg-${r.id}"></div>
       </div>
@@ -1170,11 +1736,25 @@ function renderTecnicoView(){
 }
 
 async function confirmarLlegada(id){
+  if(confirmandoLlegada[id]) return;
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
   const input = document.getElementById('codigo-'+id);
   const val = (input.value||'').trim();
   const msgId = 'codigoMsg-'+id;
+
+  if(registros[idx].confirmadoEnSitio || registros[idx].fechaInicio){
+    showMsgIn(msgId, 'Este servicio ya está confirmado en sitio.', false);
+    return;
+  }
+  if(registros[idx].estado !== 'Asignado'){
+    showMsgIn(msgId, 'Solo se confirma llegada cuando el ticket está Asignado.', false);
+    return;
+  }
+  if(!(registros[idx].tecnicosActivos||[]).length){
+    showMsgIn(msgId, 'No hay técnicos asignados.', false);
+    return;
+  }
 
   if(val !== registros[idx].codigoConfirmacion){
     showMsgIn(msgId, 'Código incorrecto. Pídeselo de nuevo al solicitante.', false);
@@ -1183,6 +1763,13 @@ async function confirmarLlegada(id){
     return;
   }
 
+  confirmandoLlegada[id] = true;
+  const btnLlegada = document.getElementById('btnLlegada-'+id);
+  if(btnLlegada){
+    btnLlegada.disabled = true;
+    btnLlegada.textContent = 'Confirmando…';
+  }
+  try{
   const fechaInicio = todayStr();
   const horaInicio = nowTimeStr();
   const espera = diffHoursMin(registros[idx].fecha, registros[idx].horaSolicita, fechaInicio, horaInicio);
@@ -1200,6 +1787,10 @@ async function confirmarLlegada(id){
   const ok = await guardarRegistros();
   renderTecnicoView();
   if(!ok) showBanner('Se confirmó la llegada pero no se sincronizó con el guardado compartido.');
+  }finally{
+    delete confirmandoLlegada[id];
+    actualizarControlesGuardado();
+  }
 }
 
 function leerTecnicosSeleccionados(id){
@@ -1211,6 +1802,11 @@ function leerTecnicosSeleccionados(id){
 async function confirmarInicio(id){
   const elegidos = leerTecnicosSeleccionados(id);
   if(elegidos.length===0){ alert('Selecciona al menos un técnico.'); return; }
+  const choque = tecnicosOcupadosEnSeleccion(id, elegidos);
+  if(choque.length){
+    alert('No se puede asignar: '+choque.join(', ')+' ya está en otro servicio. Debe quedar libre primero.');
+    return;
+  }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
   const fechaAsignado = todayStr();
@@ -1233,6 +1829,11 @@ async function confirmarInicio(id){
 async function confirmarAgregar(id){
   const elegidos = leerTecnicosSeleccionados(id);
   if(elegidos.length===0){ alert('Selecciona al menos un técnico.'); return; }
+  const choque = tecnicosOcupadosEnSeleccion(id, elegidos);
+  if(choque.length){
+    alert('No se puede agregar: '+choque.join(', ')+' ya está en otro servicio. Debe quedar libre primero.');
+    return;
+  }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
   const nuevosActivos = Array.from(new Set([...registros[idx].tecnicosActivos, ...elegidos]));
@@ -1269,12 +1870,14 @@ async function quitarTecnico(id, nombre){
   if(idx===-1) return;
   const restantes = (registros[idx].tecnicosActivos||[]).filter(t=>t!==nombre);
   const nuevoEstado = restantes.length===0 ? 'Pausado' : 'En reparación';
-  registros[idx] = {
+  let rec = {
     ...registros[idx],
     estado: nuevoEstado,
     tecnicosActivos: restantes,
     historial: [...registros[idx].historial, {accion: restantes.length===0 ? 'Se retiró (servicio pausado)' : 'Se retiró', tecnicos:[nombre], fecha:todayStr(), hora:nowTimeStr()}]
   };
+  if(nuevoEstado==='Pausado') rec = marcarInicioPausa(rec);
+  registros[idx] = rec;
   renderTable(); renderKpis(); renderTicketLists();
   const ok = await guardarRegistros();
   if(!ok) showBanner('Se actualizó el técnico pero no se sincronizó con el guardado compartido.');
@@ -1283,12 +1886,12 @@ async function quitarTecnico(id, nombre){
 async function pausarReparacion(id){
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
-  registros[idx] = {
+  registros[idx] = marcarInicioPausa({
     ...registros[idx],
     estado: 'Pausado',
     tecnicosActivos: [],
     historial: [...registros[idx].historial, {accion:'Pausado', tecnicos:[], fecha:todayStr(), hora:nowTimeStr()}]
-  };
+  });
   renderTable(); renderKpis(); renderTicketLists();
   const ok = await guardarRegistros();
   if(!ok) showBanner('Se pausó el servicio pero no se sincronizó con el guardado compartido.');
@@ -1297,11 +1900,18 @@ async function pausarReparacion(id){
 async function confirmarReanudacion(id){
   const elegidos = leerTecnicosSeleccionados(id);
   if(elegidos.length===0){ alert('Selecciona al menos un técnico.'); return; }
+  const choque = tecnicosOcupadosEnSeleccion(id, elegidos);
+  if(choque.length){
+    alert('No se puede reanudar: '+choque.join(', ')+' ya está en otro servicio. Debe quedar libre primero.');
+    return;
+  }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
+  const pausaCerrada = cerrarIntervaloPausa(registros[idx]);
   const nuevoHistorico = Array.from(new Set([...(registros[idx].tecnicosHistorico||[]), ...elegidos]));
   registros[idx] = {
     ...registros[idx],
+    ...pausaCerrada,
     estado: 'En reparación',
     tecnicosActivos: elegidos,
     tecnicosHistorico: nuevoHistorico,
@@ -1323,10 +1933,11 @@ function abrirCierre(id){
   document.getElementById('f_paro').value = '';
   document.getElementById('f_bloqueo').value = '';
   document.getElementById('f_mantenimiento').value = '';
-  document.getElementById('f_refacciones').value = '';
+  refaccionesCierre = [crearRefaccionVacia()];
+  renderRefaccionesEditor();
   document.getElementById('f_observaciones').value = '';
   document.getElementById('durInicio').textContent = 'Inicio: ' + rec.fechaInicio + ' ' + rec.horaInicio;
-  document.getElementById('durEspera').textContent = 'Espera previa: ' + (rec.esperaH!=null? rec.esperaH.toFixed(2)+' h' : '—');
+  document.getElementById('durEspera').textContent = 'Espera solicitud → sitio: ' + (rec.esperaH!=null? rec.esperaH.toFixed(2)+' h' : '—');
   actualizarPreviewCierre();
   document.getElementById('cierreCard').scrollIntoView({behavior:'smooth', block:'start'});
 }
@@ -1335,8 +1946,8 @@ function actualizarPreviewCierre(){
   if(!selectedTicketId) return;
   const rec = registros.find(r=>r.id===selectedTicketId);
   if(!rec) return;
-  const nowMin = diffHoursMin(rec.fechaInicio, rec.horaInicio, todayStr(), nowTimeStr());
-  document.getElementById('durBig').textContent = nowMin ? nowMin.totalH.toFixed(2)+' h' : '0.00 h';
+  const nowMin = minutosReparacionNeta(rec, todayStr(), nowTimeStr());
+  document.getElementById('durBig').textContent = (nowMin/60).toFixed(2)+' h';
 }
 
 function cancelarCierre(){
@@ -1345,6 +1956,8 @@ function cancelarCierre(){
 }
 
 async function cerrarServicio(){
+ if(cerrandoServicio) return;
+ setCerrandoServicio(true);
  try{
   if(!selectedTicketId){
     showMsgIn('cierreMsg', 'Selecciona un ticket primero.', false);
@@ -1367,10 +1980,23 @@ async function cerrarServicio(){
     return;
   }
   const rec = registros[idx];
+  if(rec.estado==='Cerrado' || rec.estado==='Liberado'){
+    showMsgIn('cierreMsg', 'Este servicio ya está cerrado.', false);
+    return;
+  }
+  if(rec.estado!=='En reparación'){
+    showMsgIn('cierreMsg', 'Solo puedes cerrar un servicio que está en reparación.', false);
+    return;
+  }
+  const refsValidas = validarRefaccionesCierre();
+  if(!refsValidas.ok){
+    showMsgIn('cierreMsg', refsValidas.error, false);
+    return;
+  }
   const fechaFin = todayStr();
   const horaFin = nowTimeStr();
-  const reparacion = diffHoursMin(rec.fechaInicio, rec.horaInicio, fechaFin, horaFin);
-  if(!reparacion){
+  const netaMin = minutosReparacionNeta(rec, fechaFin, horaFin);
+  if(!rec.fechaInicio || !rec.horaInicio){
     showMsgIn('cierreMsg', 'No se pudo calcular el tiempo de reparación (revisa el inicio del ticket).', false);
     return;
   }
@@ -1383,10 +2009,13 @@ async function cerrarServicio(){
     turno: document.getElementById('f_turno').value,
     paroMaquina: document.getElementById('f_paro').value,
     bloqueoCandadeo: document.getElementById('f_bloqueo').value,
-    reparacionMin: reparacion.totalMin,
-    reparacionH: Number(reparacion.totalH.toFixed(2)),
+    reparacionMin: netaMin,
+    reparacionH: Number((netaMin/60).toFixed(2)),
+    minutosPausa: minutosPausaAcumulados(rec, fechaFin, horaFin),
+    pausaDesdeFecha: '',
+    pausaDesdeHora: '',
     mantenimiento: document.getElementById('f_mantenimiento').value,
-    refacciones: document.getElementById('f_refacciones').value,
+    refacciones: refsValidas.refacciones,
     observaciones: document.getElementById('f_observaciones').value,
     historial: [...rec.historial, {accion:'Cerrado', tecnicos:[], fecha:fechaFin, hora:horaFin}],
     cerradoEn: new Date().toISOString()
@@ -1408,6 +2037,8 @@ async function cerrarServicio(){
  }catch(err){
    console.error(err);
    showMsgIn('cierreMsg', 'Ocurrió un error inesperado al guardar: ' + (err && err.message ? err.message : err), false);
+ }finally{
+   setCerrandoServicio(false);
  }
 }
 
@@ -1440,7 +2071,7 @@ function renderTable(){
       <td>${r.maquina}</td>
       <td>${r.solicitante}</td>
       <td><span class="tag ${r.prioridad}">${r.prioridad||'—'}</span></td>
-      <td>${(r.tecnicosHistorico&&r.tecnicosHistorico.length)? r.tecnicosHistorico.join(', ') : '—'}</td>
+      <td>${tecnicosVigentesTexto(r, ', ') || '—'}</td>
       <td>${r.esperaH!=null? r.esperaH.toFixed(2):'—'}</td>
       <td>${r.reparacionH!=null? r.reparacionH.toFixed(2):'—'}</td>
       <td>${r.turno||'—'}</td>
@@ -1455,6 +2086,11 @@ function renderKpis(){
   document.getElementById('kpiAsignados').textContent = registros.filter(r=>r.estado==='Asignado').length;
   document.getElementById('kpiEnCurso').textContent = registros.filter(r=>r.estado==='En reparación').length;
   document.getElementById('kpiPausados').textContent = registros.filter(r=>r.estado==='Pausado').length;
+  const pausadosViejosN = registros.filter(esPausadoViejo).length;
+  const kpiViejos = document.getElementById('kpiPausadosViejos');
+  const kpiViejosBox = document.getElementById('kpiPausadosViejosBox');
+  if(kpiViejos) kpiViejos.textContent = pausadosViejosN;
+  if(kpiViejosBox) kpiViejosBox.classList.toggle('warn', pausadosViejosN>0);
 
   const conEspera = registros.filter(r=>r.esperaH!=null);
   document.getElementById('kpiEspera').textContent = conEspera.length
@@ -1473,26 +2109,29 @@ function csvEscape(v){
 
 function historialTexto(hist){
   if(!hist) return '';
-  return hist.map(h=>`${h.accion}${h.tecnicos&&h.tecnicos.length? ' ('+h.tecnicos.join('/')+')':''} @ ${h.fecha} ${h.hora}`).join(' → ');
+  return hist.map(h=>`${h.accion}${h.por?' por '+h.por:''}${h.tecnicos&&h.tecnicos.length? ' ('+h.tecnicos.join('/')+')':''} @ ${h.fecha} ${h.hora}`).join(' → ');
 }
 
 function exportarCSV(){
   const headers = ['ID','ESTADO','FECHA','NO. DE DIA','NO DE SEMANA','MES','AREA','MAQUINA','SOLICITANTE',
-    'HORA SOLICITA','PRIORIDAD','FALLA','TIPO','PARO MAQUINA','TECNICOS','ASIGNADO FECHA','ASIGNADO HORA',
+    'HORA SOLICITA','PRIORIDAD','FALLA','TIPO','PARO MAQUINA','TECNICOS','TECNICOS ACTIVOS','ASIGNADO FECHA','ASIGNADO HORA',
     'CONFIRMADO EN SITIO','FECHA ENTREGA','HORA DE ENTREGA',
-    'INICIO REPARACION FECHA','INICIO REPARACION HORA','TIEMPO ESPERA (MIN)','TIEMPO ESPERA (h)',
-    'TIEMPO REPARACION (MIN)','TIEMPO REPARACION (h)','DURACION TOTAL (h)',
+    'INICIO REPARACION FECHA','INICIO REPARACION HORA','TIEMPO ESPERA (MIN) solicitud→sitio','TIEMPO ESPERA (h) solicitud→sitio',
+    'TIEMPO REPARACION (MIN)','TIEMPO REPARACION (h)','PAUSA (MIN)','DURACION TOTAL (h)',
+    'BLOQUE Y CANDADEO','FECHA LIBERADO','HORA LIBERADO','LIBERADO POR',
     'PROBLEMA','MANTENIMIENTO','REFACCIONES','TURNO PRODUCCION','OBSERVACIONES','HISTORIAL'];
 
   const rows = registros.slice().reverse().map(r=>{
     const totalH = (r.esperaH!=null && r.reparacionH!=null) ? Number((r.esperaH + r.reparacionH).toFixed(2)) : '';
     return [
       r.id, r.estado, r.fecha, r.diaNombre, r.semana, r.mes, r.area, r.maquina, r.solicitante,
-      r.horaSolicita, r.prioridad, r.falla, r.tipo, r.paroMaquina, (r.tecnicosHistorico||[]).join(' / '),
+      r.horaSolicita, r.prioridad, r.falla, r.tipo, r.paroMaquina, tecnicosVigentesTexto(r, ' / '),
+      (r.tecnicosActivos||[]).join(' / '),
       r.fechaAsignado, r.horaAsignado, (r.confirmadoEnSitio ? 'Sí' : 'No'), r.fechaFin, r.horaFin,
       r.fechaInicio, r.horaInicio, r.esperaMin, r.esperaH,
-      r.reparacionMin, r.reparacionH, totalH,
-      r.problema, r.mantenimiento, r.refacciones, r.turno, r.observaciones, historialTexto(r.historial)
+      r.reparacionMin, r.reparacionH, r.minutosPausa!=null ? r.minutosPausa : '', totalH,
+      r.bloqueoCandadeo||'', r.fechaLiberado||'', r.horaLiberado||'', r.liberadoPor||'',
+      r.problema, r.mantenimiento, refaccionesTexto(r.refacciones), r.turno, r.observaciones, historialTexto(r.historial)
     ];
   });
 
@@ -1510,22 +2149,60 @@ function exportarCSV(){
   URL.revokeObjectURL(url);
 }
 
-document.getElementById('r_fecha').value = todayStr();
+function minutosDeHora(hora){
+  const p = String(hora||'').split(':');
+  const h = Number(p[0]);
+  const m = Number(p[1]||0);
+  if(!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return h*60 + m;
+}
+
+function restarUnDia(fechaStr){
+  const d = new Date(fechaStr+'T00:00:00');
+  if(isNaN(d.getTime())) return '';
+  d.setDate(d.getDate()-1);
+  return String(d.getFullYear())+'-'+
+    String(d.getMonth()+1).padStart(2,'0')+'-'+
+    String(d.getDate()).padStart(2,'0');
+}
+
+function fechaTurno(fechaFin, horaFin, turno){
+  if(!fechaFin || !horaFin) return '';
+  const mins = minutosDeHora(horaFin);
+  if(mins==null) return '';
+  const t = String(turno||'');
+  const esNoche = t==='3°' || (!t && (mins>=22*60 || mins<7*60));
+  if(esNoche && mins<7*60) return restarUnDia(fechaFin);
+  return fechaFin;
+}
+
+document.getElementById('r_fecha').value = fechaTurno(todayStr(), nowTimeStr(), '') || todayStr();
+
+function etiquetaTurnoResumen(turno){
+  if(turno==='1°') return '1° (07:00–15:00)';
+  if(turno==='2°') return '2° (15:00–22:00)';
+  if(turno==='3°') return '3° (22:00–07:00)';
+  return 'todos los turnos';
+}
 
 function generarResumen(){
   const turno = document.getElementById('r_turno').value;
   const fecha = document.getElementById('r_fecha').value;
 
   const items = registros.filter(r=>{
-    if(r.estado !== 'Cerrado') return false;
+    if(r.estado!=='Cerrado' && r.estado!=='Liberado') return false;
+    if(!r.fechaFin || !r.horaFin) return false;
     if(turno && r.turno !== turno) return false;
-    if(fecha && r.fecha !== fecha) return false;
+    if(fecha){
+      const ft = fechaTurno(r.fechaFin, r.horaFin, r.turno);
+      if(ft !== fecha) return false;
+    }
     return true;
   }).slice().reverse();
 
-  const fechaLabel = fecha || 'todas las fechas';
-  const turnoLabel = turno || 'todos los turnos';
-  let texto = `*Reporte de mantenimiento — Turno ${turnoLabel}*\\n*Fecha:* ${fechaLabel}\\n*Servicios atendidos:* ${items.length}\\n\\n`;
+  const fechaLabel = fecha || 'todas las fechas de inicio de turno';
+  const turnoLabel = etiquetaTurnoResumen(turno);
+  let texto = `*Reporte de mantenimiento — Turno ${turnoLabel}*\\n*Fecha (inicio del turno):* ${fechaLabel}\\n*Servicios atendidos:* ${items.length}\\n\\n`;
 
   if(items.length===0){
     texto += 'No hay servicios cerrados con esos filtros.';
@@ -1569,6 +2246,14 @@ function tickClock(){
 tickClock();
 setInterval(tickClock, 1000*15);
 
+setInterval(function(){
+  if(!urlConfigurada()) return;
+  if(!supervisorUnlocked && !tecnicoUnlocked) return;
+  if(!vistaSupervisorOTecnico()) return;
+  cargarRegistros(true);
+}, 45000);
+
+actualizarControlesGuardado();
 cargarRegistros();
 </script>
 </body>
@@ -1580,11 +2265,11 @@ html = html.replace('__LISTS_JSON__', lists_js).replace('__TURNOS_JSON__', turno
 with open(SALIDA, 'w', encoding='utf-8') as f:
     f.write(html)
 
-print(f"\n✅ Listo: se generó '{SALIDA}' con las listas actualizadas.")
+print(f"\nListo: se genero '{SALIDA}' con las listas actualizadas.")
 print(f"   Recuerda revisar el PIN de supervisor ('SUPERVISOR_PIN = \"{SUPERVISOR_PIN}\"') y el Gerente de Mantenimiento ('GERENTE_MANTENIMIENTO = \"{GERENTE_MANTENIMIENTO}\"') en este script si los quieres cambiar.")
-print(f"   Los técnicos ahora entran con su PIN individual (columna PIN del Excel, junto a TECNICO).")
+print(f"   Los tecnicos ahora entran con su PIN individual (columna PIN del Excel, junto a TECNICO).")
 if SHEET_WEBAPP_URL.startswith("PEGA_AQUI"):
-    print("   ⚠ SHEET_WEBAPP_URL todavía no está configurada — el formulario guardará solo en la sesión actual.")
+    print("   AVISO: SHEET_WEBAPP_URL todavia no esta configurada — el formulario guardara solo en la sesion actual.")
 else:
-    print(f"   Conectado a Google Sheets vía: {SHEET_WEBAPP_URL}")
+    print(f"   Conectado a Google Sheets via: {SHEET_WEBAPP_URL}")
 
