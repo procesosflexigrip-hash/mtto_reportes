@@ -362,7 +362,7 @@
         <div class="kpi"><div class="n" id="kpiPausados">0</div><div class="l">Pausados</div></div>
         <div class="kpi" id="kpiPausadosViejosBox"><div class="n" id="kpiPausadosViejos">0</div><div class="l">Pausados &gt; 8 h</div></div>
         <div class="kpi" title="No incluye máquinas SERVICIOS ni NO APLICA"><div class="n" id="kpiEspera">0.0 h</div><div class="l">Espera promedio</div></div>
-        <div class="kpi"><div class="n" id="kpiReparacion">0.0 h</div><div class="l">Reparación promedio</div></div>
+        <div class="kpi" title="No incluye máquinas SERVICIOS ni NO APLICA"><div class="n" id="kpiReparacion">0.0 h</div><div class="l">Reparación promedio</div></div>
       </div>
 
       <div class="card">
@@ -2031,7 +2031,12 @@ function renderKpis(){
   document.getElementById('kpiEspera').textContent = conEspera.length
     ? (conEspera.reduce((s,r)=>s+r.esperaH,0)/conEspera.length).toFixed(1) + ' h' : '0.0 h';
 
-  const cerrados = registros.filter(r=>r.estado==='Cerrado' && r.reparacionH!=null);
+  const cerrados = registros.filter(r=>{
+    if(r.reparacionH==null) return false;
+    if(r.estado!=='Cerrado' && r.estado!=='Liberado') return false;
+    const maquina = normalizarTexto(r.maquina);
+    return maquina!=='SERVICIOS' && maquina!=='NO APLICA';
+  });
   document.getElementById('kpiReparacion').textContent = cerrados.length
     ? (cerrados.reduce((s,r)=>s+r.reparacionH,0)/cerrados.length).toFixed(1) + ' h' : '0.0 h';
 }
