@@ -263,6 +263,8 @@ html = """<!DOCTYPE html>
 
   .table-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;}
   .table-toolbar input[type=text]{max-width:260px;}
+  .export-semana{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);}
+  .export-semana input[type=week]{width:auto;max-width:170px;padding:8px 10px;}
   .table-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;}
   table{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1000px;}
   thead th{position:sticky;top:0;background:#0e141b;color:var(--muted);text-align:left;
@@ -449,8 +451,8 @@ html = """<!DOCTYPE html>
         <div class="kpi"><div class="n" id="kpiEnCurso">0</div><div class="l">En reparación</div></div>
         <div class="kpi"><div class="n" id="kpiPausados">0</div><div class="l">Pausados</div></div>
         <div class="kpi" id="kpiPausadosViejosBox"><div class="n" id="kpiPausadosViejos">0</div><div class="l">Pausados &gt; 8 h</div></div>
-        <div class="kpi"><div class="n" id="kpiEspera">0.0 h</div><div class="l">Espera promedio</div></div>
-        <div class="kpi"><div class="n" id="kpiReparacion">0.0 h</div><div class="l">Reparación promedio</div></div>
+        <div class="kpi" title="No incluye máquinas SERVICIOS ni NO APLICA"><div class="n" id="kpiEspera">0.0 h</div><div class="l">Espera promedio</div></div>
+        <div class="kpi" title="No incluye máquinas SERVICIOS ni NO APLICA"><div class="n" id="kpiReparacion">0.0 h</div><div class="l">Reparación promedio</div></div>
       </div>
 
       <div class="card">
@@ -565,7 +567,10 @@ html = """<!DOCTYPE html>
         <h2><span class="num">📋</span> Todos los registros</h2>
         <div class="table-toolbar">
           <input type="text" id="searchBox" placeholder="Buscar por máquina, área, solicitante…" oninput="renderTable()">
-          <div style="display:flex;gap:8px;">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <label class="export-semana">Semana
+              <input type="week" id="exportSemana">
+            </label>
             <button class="btn-export" onclick="exportarCSV()">⬇ Exportar a Excel (CSV)</button>
             <button class="btn-ghost" onclick="cargarRegistros(true)">↻ Actualizar</button>
           </div>
@@ -953,6 +958,22 @@ function isoWeek(dateObj){
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
   return Math.ceil((((d - yearStart) / 86400000) + 1)/7);
+}
+
+function isoSemanaClave(dateObj){
+  const d = new Date(Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
+  const week = Math.ceil((((d - yearStart) / 86400000) + 1)/7);
+  return d.getUTCFullYear() + '-W' + String(week).padStart(2,'0');
+}
+
+function claveSemanaDeFecha(fechaStr){
+  if(!fechaStr) return '';
+  const d = new Date(String(fechaStr)+'T00:00:00');
+  if(isNaN(d.getTime())) return '';
+  return isoSemanaClave(d);
 }
 
 function diffHoursMin(fechaA, horaA, fechaB, horaB){
@@ -2092,11 +2113,20 @@ function renderKpis(){
   if(kpiViejos) kpiViejos.textContent = pausadosViejosN;
   if(kpiViejosBox) kpiViejosBox.classList.toggle('warn', pausadosViejosN>0);
 
-  const conEspera = registros.filter(r=>r.esperaH!=null);
+  const conEspera = registros.filter(r=>{
+    if(r.esperaH==null) return false;
+    const maquina = normalizarTexto(r.maquina);
+    return maquina!=='SERVICIOS' && maquina!=='NO APLICA';
+  });
   document.getElementById('kpiEspera').textContent = conEspera.length
     ? (conEspera.reduce((s,r)=>s+r.esperaH,0)/conEspera.length).toFixed(1) + ' h' : '0.0 h';
 
-  const cerrados = registros.filter(r=>r.estado==='Cerrado' && r.reparacionH!=null);
+  const cerrados = registros.filter(r=>{
+    if(r.reparacionH==null) return false;
+    if(r.estado!=='Cerrado' && r.estado!=='Liberado') return false;
+    const maquina = normalizarTexto(r.maquina);
+    return maquina!=='SERVICIOS' && maquina!=='NO APLICA';
+  });
   document.getElementById('kpiReparacion').textContent = cerrados.length
     ? (cerrados.reduce((s,r)=>s+r.reparacionH,0)/cerrados.length).toFixed(1) + ' h' : '0.0 h';
 }
@@ -2113,6 +2143,17 @@ function historialTexto(hist){
 }
 
 function exportarCSV(){
+  const semana = (document.getElementById('exportSemana').value || '').trim();
+  if(!semana){
+    alert('Elige la semana que quieres exportar.');
+    return;
+  }
+  const lista = registros.filter(r=>claveSemanaDeFecha(r.fecha)===semana);
+  if(lista.length===0){
+    alert('No hay registros solicitados en la semana '+semana+'.');
+    return;
+  }
+
   const headers = ['ID','ESTADO','FECHA','NO. DE DIA','NO DE SEMANA','MES','AREA','MAQUINA','SOLICITANTE',
     'HORA SOLICITA','PRIORIDAD','FALLA','TIPO','PARO MAQUINA','TECNICOS','TECNICOS ACTIVOS','ASIGNADO FECHA','ASIGNADO HORA',
     'CONFIRMADO EN SITIO','FECHA ENTREGA','HORA DE ENTREGA',
@@ -2121,7 +2162,7 @@ function exportarCSV(){
     'BLOQUE Y CANDADEO','FECHA LIBERADO','HORA LIBERADO','LIBERADO POR',
     'PROBLEMA','MANTENIMIENTO','REFACCIONES','TURNO PRODUCCION','OBSERVACIONES','HISTORIAL'];
 
-  const rows = registros.slice().reverse().map(r=>{
+  const rows = lista.slice().reverse().map(r=>{
     const totalH = (r.esperaH!=null && r.reparacionH!=null) ? Number((r.esperaH + r.reparacionH).toFixed(2)) : '';
     return [
       r.id, r.estado, r.fecha, r.diaNombre, r.semana, r.mes, r.area, r.maquina, r.solicitante,
@@ -2142,7 +2183,7 @@ function exportarCSV(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'MANT_' + todayStr() + '.csv';
+  a.download = 'MANT_' + semana + '.csv';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -2177,6 +2218,7 @@ function fechaTurno(fechaFin, horaFin, turno){
 }
 
 document.getElementById('r_fecha').value = fechaTurno(todayStr(), nowTimeStr(), '') || todayStr();
+document.getElementById('exportSemana').value = isoSemanaClave(new Date());
 
 function etiquetaTurnoResumen(turno){
   if(turno==='1°') return '1° (07:00–15:00)';
