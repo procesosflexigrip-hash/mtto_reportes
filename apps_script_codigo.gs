@@ -145,84 +145,115 @@ function doGet(e) {
 
 /**
  * Se ejecuta cuando el formulario guarda cambios (fetch POST).
- * Recibe el arreglo COMPLETO de registros y reemplaza el contenido
- * de la hoja con ese arreglo (así se mantienen sincronizados).
- * Después intenta avisar a Telegram; si el aviso falla, el guardado
- * igual queda hecho.
+ * Recibe solo los servicios modificados (cambios, con baseRev) y las
+ * solicitudes nuevas (nuevos, sin ID). Fusiona contra lo que está en
+ * la hoja: si baseRev no coincide, no escribe nada. El ID nuevo lo
+ * asigna este script. Telegram se avisa después de soltar el candado.
  */
 function doPost(e) {
   const lock = LockService.getScriptLock();
+  var eventos = [];
+  var fusion = null;
+  var guardados = 0;
   try {
     lock.waitLock(30000);
-    const registros = JSON.parse(e.postData.contents);
-    if (!Array.isArray(registros)) {
-      return respond_({ ok: false, error: 'El cuerpo debe ser un arreglo de registros' });
+    if (!e || !e.postData || !e.postData.contents) {
+      return respond_({ ok: false, error: 'El guardado llegó vacío.' });
+    }
+    const body = JSON.parse(e.postData.contents);
+    if (Array.isArray(body)) {
+      return respond_({
+        ok: false,
+        error: 'Actualiza la página: esta versión del formulario ya no es compatible.'
+      });
+    }
+    if (!body || typeof body !== 'object') {
+      return respond_({ ok: false, error: 'El cuerpo del guardado no es válido.' });
+    }
+    const cambios = Array.isArray(body.cambios) ? body.cambios : null;
+    const nuevos = Array.isArray(body.nuevos) ? body.nuevos : null;
+    if (!cambios && !nuevos) {
+      return respond_({ ok: false, error: 'El guardado debe incluir cambios o nuevos.' });
     }
 
     asegurarContactos_();
-    const anteriores = leerRegistros_();
-    const validacion = validarReemplazo_(anteriores, registros);
-    if (!validacion.ok) {
+    const hoja = leerHojaRegistros_();
+    if (hoja.duplicados.length > 0) {
       return respond_({
         ok: false,
-        error: validacion.error,
-        idsFaltantes: validacion.idsFaltantes || []
+        error: 'Guardado rechazado: hay IDs duplicados (' + hoja.duplicados.join(', ') + '). Avisa al administrador para que ejecute la auditoría de la hoja (auditarRegistros).',
+        idsFaltantes: hoja.duplicados,
+        registros: hoja.registros
       });
     }
-    const maquinas = validarMaquinasDisponibles_(anteriores, registros);
+
+    const fusionCambios = fusionarCambios_(hoja.registros, cambios || []);
+    if (!fusionCambios.ok) {
+      return respond_({
+        ok: false,
+        conflicto: !!fusionCambios.conflicto,
+        error: fusionCambios.error,
+        ids: fusionCambios.ids || [],
+        registros: hoja.registros
+      });
+    }
+
+    const conNuevos = agregarNuevos_(fusionCambios.registros, nuevos || []);
+    if (!conNuevos.ok) {
+      return respond_({ ok: false, error: conNuevos.error, registros: hoja.registros });
+    }
+
+    const maquinas = validarMaquinasFusion_(conNuevos.registros, conNuevos.idsNuevos);
     if (!maquinas.ok) {
       return respond_({
         ok: false,
         error: maquinas.error,
-        servicioExistente: maquinas.servicioExistente || null
+        servicioExistente: maquinas.servicioExistente || null,
+        registros: hoja.registros
       });
     }
-    const tecnicos = validarTecnicosDisponibles_(anteriores, registros);
+    const tecnicos = validarTecnicosDisponibles_(null, conNuevos.registros);
     if (!tecnicos.ok) {
       return respond_({
         ok: false,
         error: tecnicos.error,
-        servicioExistente: tecnicos.servicioExistente || null
+        servicioExistente: tecnicos.servicioExistente || null,
+        registros: hoja.registros
       });
     }
-    const eventos = detectarEventosTelegram_(anteriores, registros);
 
-    respaldarRegistros_(anteriores);
-    const sheet = getSheet_();
-    const lastRow = sheet.getLastRow();
-    if (lastRow > 1) {
-      sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
-    }
-
-    if (registros.length > 0) {
-      const filas = registros.map(function (r) {
-        return [
-          r.id,
-          r.estado,
-          r.maquina || '',
-          JSON.stringify(r)
-        ];
+    fusion = conNuevos.registros;
+    guardados = Object.keys(fusionCambios.aplicados).length + conNuevos.creados.length;
+    if (guardados === 0) {
+      return respond_({
+        ok: true,
+        guardados: 0,
+        registros: hoja.registros,
+        telegram: { enviados: 0, error: null }
       });
-      sheet.getRange(2, 1, filas.length, 4).setValues(filas);
     }
 
-    var telegram = { enviados: 0, error: null };
-    try {
-      telegram.enviados = notificarTelegram_(eventos);
-    } catch (errTg) {
-      telegram.error = String(errTg);
-    }
-
-    return respond_({
-      ok: true,
-      guardados: registros.length,
-      telegram: telegram
-    });
+    eventos = detectarEventosTelegram_(hoja.registros, fusion);
+    respaldarRegistros_(hoja.registros);
+    escribirAfectados_(hoja.sheet, hoja.filas, fusionCambios.aplicados, conNuevos.creados);
   } catch (err) {
     return respond_({ ok: false, error: String(err) });
   } finally {
     if (lock.hasLock()) lock.releaseLock();
   }
+
+  var telegram = { enviados: 0, error: null };
+  try {
+    telegram.enviados = notificarTelegram_(eventos);
+  } catch (errTg) {
+    telegram.error = String(errTg);
+  }
+  return respond_({
+    ok: true,
+    guardados: guardados,
+    registros: fusion,
+    telegram: telegram
+  });
 }
 
 /**
@@ -260,27 +291,194 @@ function asegurarContactos_() {
 }
 
 function leerRegistros_() {
-  const sheet = getSheet_();
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) {
-    return [];
-  }
-  const jsonColumna = sheet.getRange(2, 4, lastRow - 1, 1).getValues();
-  return jsonColumna
-    .map(function (fila) {
-      try {
-        return JSON.parse(fila[0]);
-      } catch (err) {
-        return null;
-      }
-    })
-    .filter(function (r) { return r !== null; });
+  return leerHojaRegistros_().registros;
 }
 
 /**
- * Evita que un navegador que no pudo cargar la hoja la reemplace con una
- * lista vacía o incompleta. Este sistema no tiene una acción de eliminar,
- * por lo que ningún guardado válido debe perder IDs existentes.
+ * Lee DATA_JSON y anota la fila de cada id. Si un id aparece dos veces,
+ * el guardado se rechaza: esa hoja no se puede fusionar con seguridad.
+ */
+function leerHojaRegistros_() {
+  const sheet = getSheet_();
+  const lastRow = sheet.getLastRow();
+  const registros = [];
+  const filas = {};
+  const duplicados = [];
+  if (lastRow < 2) {
+    return { sheet: sheet, registros: registros, filas: filas, duplicados: duplicados };
+  }
+  const valores = sheet.getRange(2, 4, lastRow - 1, 1).getValues();
+  for (var i = 0; i < valores.length; i++) {
+    const crudo = valores[i][0];
+    if (crudo === '' || crudo == null) continue;
+    var rec = null;
+    try {
+      rec = JSON.parse(crudo);
+    } catch (err) {
+      rec = null;
+    }
+    if (!rec || rec.id == null) continue;
+    const id = String(rec.id);
+    if (filas[id]) duplicados.push(rec.id);
+    else filas[id] = i + 2;
+    registros.push(rec);
+  }
+  return { sheet: sheet, registros: registros, filas: filas, duplicados: duplicados };
+}
+
+function revDe_(r) {
+  if (!r || r.rev == null || r.rev === '') return 0;
+  const n = Number(r.rev);
+  if (n !== n || n < 0) return 0;
+  return n;
+}
+
+function clonarRegistro_(r) {
+  return JSON.parse(JSON.stringify(r));
+}
+
+function idsRepetidos_(arr) {
+  const vistos = {};
+  const repetidos = [];
+  (arr || []).forEach(function (r) {
+    if (!r || r.id == null) return;
+    const id = String(r.id);
+    if (vistos[id]) repetidos.push(r.id);
+    vistos[id] = true;
+  });
+  return repetidos;
+}
+
+/**
+ * Aplica cambios solo cuando baseRev es la revisión que está en la hoja.
+ * Si alguno no coincide, no se aplica ninguno.
+ */
+function fusionarCambios_(actuales, cambios) {
+  const repetidos = idsRepetidos_(cambios);
+  if (repetidos.length > 0) {
+    return {
+      ok: false,
+      error: 'Guardado rechazado: hay IDs duplicados (' + repetidos.join(', ') + ').'
+    };
+  }
+  const porId = mapaPorId_(actuales);
+  const aplicados = {};
+  const conflictos = [];
+  for (var i = 0; i < (cambios || []).length; i++) {
+    const cambio = cambios[i];
+    if (!cambio || typeof cambio !== 'object' || Array.isArray(cambio) || cambio.id == null) {
+      return { ok: false, error: 'Un cambio llegó sin ID de servicio.' };
+    }
+    const actual = porId[String(cambio.id)];
+    if (!actual) {
+      conflictos.push(cambio.id);
+      continue;
+    }
+    const base = cambio.baseRev == null || cambio.baseRev === '' ? 0 : Number(cambio.baseRev);
+    if (base !== base || base !== revDe_(actual)) {
+      conflictos.push(cambio.id);
+      continue;
+    }
+    if (actual.creadoEn && cambio.creadoEn && String(actual.creadoEn) !== String(cambio.creadoEn)) {
+      conflictos.push(cambio.id);
+      continue;
+    }
+    if (!actual.creadoEn && huellaRegistro_(actual) !== huellaRegistro_(cambio)) {
+      conflictos.push(cambio.id);
+      continue;
+    }
+    const siguiente = clonarRegistro_(cambio);
+    delete siguiente.baseRev;
+    siguiente.id = actual.id;
+    siguiente.rev = revDe_(actual) + 1;
+    if (actual.creadoEn) siguiente.creadoEn = actual.creadoEn;
+    aplicados[String(actual.id)] = siguiente;
+  }
+  if (conflictos.length > 0) {
+    return {
+      ok: false,
+      conflicto: true,
+      ids: conflictos,
+      error: 'Otro usuario actualizó el servicio ' + conflictos.map(function (id) {
+        return '#' + id;
+      }).join(', ') + '. Se recargó la lista; vuelve a intentar.'
+    };
+  }
+  const fusion = (actuales || []).map(function (r) {
+    return aplicados[String(r.id)] || r;
+  });
+  return { ok: true, registros: fusion, aplicados: aplicados };
+}
+
+/**
+ * El servidor asigna el ID. Las solicitudes nuevas quedan al inicio,
+ * que es el orden en el que el formulario muestra los servicios.
+ */
+function agregarNuevos_(existentes, nuevos) {
+  var maxId = 0;
+  (existentes || []).forEach(function (r) {
+    const n = Number(r && r.id);
+    if (n === n && n > maxId) maxId = n;
+  });
+  const creados = [];
+  const idsNuevos = {};
+  for (var i = 0; i < (nuevos || []).length; i++) {
+    const origen = nuevos[i];
+    if (!origen || typeof origen !== 'object' || Array.isArray(origen)) {
+      return { ok: false, error: 'Una solicitud nueva llegó vacía.' };
+    }
+    maxId += 1;
+    const rec = clonarRegistro_(origen);
+    delete rec.baseRev;
+    delete rec.id;
+    delete rec.rev;
+    rec.id = maxId;
+    rec.rev = 1;
+    creados.push(rec);
+    idsNuevos[String(rec.id)] = true;
+  }
+  return {
+    ok: true,
+    registros: creados.concat(existentes || []),
+    creados: creados,
+    idsNuevos: idsNuevos
+  };
+}
+
+function escribirRegistroEnFila_(sheet, fila, r) {
+  sheet.getRange(fila, 1, 1, 4).setValues([[
+    r.id,
+    r.estado || '',
+    r.maquina || '',
+    JSON.stringify(r)
+  ]]);
+}
+
+/**
+ * Actualiza solo las filas tocadas e inserta las nuevas debajo del
+ * encabezado. No borra el resto de la hoja.
+ */
+function escribirAfectados_(sheet, filas, aplicados, creados) {
+  Object.keys(aplicados || {}).forEach(function (id) {
+    const fila = filas[id];
+    if (fila) escribirRegistroEnFila_(sheet, fila, aplicados[id]);
+  });
+  Object.keys(aplicados || {}).forEach(function (id) {
+    if (filas[id]) return;
+    const destino = sheet.getLastRow() + 1;
+    escribirRegistroEnFila_(sheet, destino, aplicados[id]);
+    filas[id] = destino;
+  });
+  const lista = creados || [];
+  for (var i = lista.length - 1; i >= 0; i--) {
+    sheet.insertRowAfter(1);
+    escribirRegistroEnFila_(sheet, 2, lista[i]);
+  }
+}
+
+/**
+ * Conservada por si hay que revisar un reemplazo a mano. doPost ya no
+ * reemplaza la hoja: fusiona cada servicio por su revisión.
  */
 function validarReemplazo_(anteriores, nuevos) {
   const idsNuevos = {};
@@ -392,6 +590,38 @@ function validarMaquinasDisponibles_(anteriores, nuevos) {
     if (r.estado !== 'Liberado') ocupadas[clave] = r;
   }
 
+  return { ok: true };
+}
+
+/**
+ * Revisa el resultado ya fusionado. Solo las solicitudes nuevas pueden
+ * chocar con una máquina ocupada; un cambio de otro servicio no reabre
+ * una máquina ni pisa la que ya estaba tomada.
+ */
+function validarMaquinasFusion_(resultado, idsNuevos) {
+  const ocupadas = {};
+  const nuevas = idsNuevos || {};
+  (resultado || []).forEach(function (r) {
+    if (!r || nuevas[String(r.id)]) return;
+    if (!r.maquina || r.estado === 'Liberado' || esMaquinaSinBloqueo_(r.maquina)) return;
+    ocupadas[String(r.maquina).trim().toUpperCase()] = r;
+  });
+  for (var i = 0; i < (resultado || []).length; i++) {
+    const r = resultado[i];
+    if (!r || !nuevas[String(r.id)]) continue;
+    if (!r.maquina || r.estado === 'Liberado' || esMaquinaSinBloqueo_(r.maquina)) continue;
+    const clave = String(r.maquina).trim().toUpperCase();
+    if (ocupadas[clave]) {
+      const existente = ocupadas[clave];
+      return {
+        ok: false,
+        error: 'La máquina ya tiene el servicio #' + existente.id +
+          ' en estado "' + existente.estado + '". Debe liberarse antes de crear otro.',
+        servicioExistente: existente.id
+      };
+    }
+    ocupadas[clave] = r;
+  }
   return { ok: true };
 }
 

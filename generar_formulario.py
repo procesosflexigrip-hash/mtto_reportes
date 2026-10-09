@@ -444,6 +444,7 @@ html = """<!DOCTYPE html>
     </div>
 
     <div id="supervisorContent" style="display:none;">
+      <p class="hint" id="kpiSemanaLabel" style="margin:0 0 8px;">Semana en curso</p>
       <div class="kpis" id="kpiRow">
         <div class="kpi"><div class="n" id="kpiTotal">0</div><div class="l">Total</div></div>
         <div class="kpi"><div class="n" id="kpiPendientes">0</div><div class="l">Esperando asignar</div></div>
@@ -569,7 +570,7 @@ html = """<!DOCTYPE html>
           <input type="text" id="searchBox" placeholder="Buscar por máquina, área, solicitante…" oninput="renderTable()">
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <label class="export-semana">Semana
-              <input type="week" id="exportSemana">
+              <input type="week" id="exportSemana" onchange="renderKpis()">
             </label>
             <button class="btn-export" onclick="exportarCSV()">⬇ Exportar a Excel (CSV)</button>
             <button class="btn-ghost" onclick="cargarRegistros(true)">↻ Actualizar</button>
@@ -1079,6 +1080,7 @@ function tecnicosVigentesTexto(r, sep){
 
 function showMsgIn(elId, text, ok){
   const el = document.getElementById(elId);
+  if(!el) return;
   el.className = 'msg ' + (ok?'ok':'err');
   el.textContent = text;
   setTimeout(()=>{ el.className='msg'; }, 4000);
@@ -1087,6 +1089,10 @@ function showMsgIn(elId, text, ok){
 let storageAvailable = false;
 let creandoSolicitud = false;
 let cerrandoServicio = false;
+let escriturasEnCurso = 0;
+let generacionDatos = 0;
+let cargaSeq = 0;
+let colaEscritura = Promise.resolve();
 const confirmandoLlegada = {};
 
 function urlConfigurada(){
@@ -1104,6 +1110,11 @@ function actualizarControlesGuardado(){
   document.querySelectorAll('button[onclick]').forEach(btn=>{
     const accion = btn.getAttribute('onclick') || '';
     if(ACCIONES_QUE_GUARDAN.some(nombre=>accion.includes(nombre))){
+      if(escriturasEnCurso > 0){
+        btn.disabled = true;
+        btn.title = 'Espera a que termine de guardarse.';
+        return;
+      }
       if(accion.includes('crearSolicitud(') && creandoSolicitud){
         btn.disabled = true;
         return;
@@ -1237,6 +1248,10 @@ function aplicarAvisosLocales(prev, next){
 
 let snapshotAvisos = null;
 
+function respuestaVigente(gen, seq){
+  return seq === cargaSeq && gen === generacionDatos && escriturasEnCurso === 0;
+}
+
 async function cargarRegistros(silent){
   if(!urlConfigurada()){
     storageAvailable = false;
@@ -1251,20 +1266,27 @@ async function cargarRegistros(silent){
     if(tecnicoUnlocked) renderTecnicoView();
     return;
   }
+  if(escriturasEnCurso > 0) return;
+  const gen = generacionDatos;
+  const seq = ++cargaSeq;
   try{
     const res = await fetch(SHEET_WEBAPP_URL, {method:'GET'});
+    if(!respuestaVigente(gen, seq)) return;
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
+    if(!respuestaVigente(gen, seq)) return;
     if(!Array.isArray(data)){
       throw new Error('El servidor no devolvió una lista válida de registros.');
     }
     registros = data;
     storageAvailable = true;
   }catch(e){
+    if(!respuestaVigente(gen, seq)) return;
     storageAvailable = false;
     console.error(e);
     showBanner('No se pudo cargar desde Google Sheets. El guardado está bloqueado para proteger los registros. Detalle: ' + (e && e.message ? e.message : e));
   }
+  if(!respuestaVigente(gen, seq)) return;
   const nextSnap = firmaAvisos(registros);
   if(silent && snapshotAvisos){
     aplicarAvisosLocales(snapshotAvisos, nextSnap);
@@ -1278,40 +1300,97 @@ async function cargarRegistros(silent){
   actualizarControlesGuardado();
 }
 
-async function guardarRegistros(){
-  if(!urlConfigurada()){
-    showBanner('No se puede guardar: falta configurar la conexión con Google Sheets.');
-    return false;
-  }
-  if(!storageAvailable){
-    showBanner('Guardado bloqueado para proteger los datos: primero actualiza y confirma que los registros cargan desde Google Sheets.');
-    return false;
-  }
-  try{
-    const res = await fetch(SHEET_WEBAPP_URL, {
-      method: 'POST',
-      body: JSON.stringify(registros)
-    });
-    if(!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    if(!data || data.ok !== true){
-      const detalle = data && data.error ? data.error : 'El servidor rechazó el guardado.';
-      if(/duplicad/i.test(detalle)){
-        throw new Error('La hoja de Google tiene un registro repetido y por eso no se puede guardar nada. Avisa al administrador para que ejecute la auditoría de la hoja (auditarRegistros). Detalle: ' + detalle);
-      }
-      const faltantes = data && Array.isArray(data.idsFaltantes) && data.idsFaltantes.length
-        ? ' IDs faltantes: ' + data.idsFaltantes.join(', ')
-        : '';
-      throw new Error(detalle + faltantes);
+function revDe(r){
+  const n = Number(r && r.rev);
+  return n === n && n > 0 ? n : 0;
+}
+
+function prepararCambio(registro){
+  const cambio = Object.assign({}, registro);
+  cambio.baseRev = revDe(registro);
+  delete cambio.rev;
+  return cambio;
+}
+
+function encolarEscritura(trabajo){
+  const corre = colaEscritura.then(trabajo, trabajo);
+  colaEscritura = corre.then(function(){}, function(){});
+  return corre;
+}
+
+function pintarTodo(){
+  renderTable();
+  renderKpis();
+  renderLiberarLista();
+  if(supervisorUnlocked) renderTicketLists();
+  if(tecnicoUnlocked) renderTecnicoView();
+  actualizarControlesGuardado();
+}
+
+async function enviarGuardado(payload){
+  return encolarEscritura(async function(){
+    if(!urlConfigurada()){
+      showBanner('No se puede guardar: falta configurar la conexión con Google Sheets.');
+      return { ok: false, error: 'Sin conexión configurada.' };
     }
-    return true;
-  }catch(e){
-    storageAvailable = false;
+    if(!storageAvailable){
+      showBanner('Guardado bloqueado para proteger los datos: primero actualiza y confirma que los registros cargan desde Google Sheets.');
+      return { ok: false, error: 'Guardado bloqueado.' };
+    }
+    generacionDatos++;
+    escriturasEnCurso++;
     actualizarControlesGuardado();
-    console.error('Error guardando', e);
-    showBanner('No se guardó ningún cambio. Se bloquearon las acciones para proteger los registros. Actualiza la página. Detalle: ' + (e && e.message ? e.message : e));
-    return false;
-  }
+    try{
+      const res = await fetch(SHEET_WEBAPP_URL, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if(data && Array.isArray(data.registros)){
+        registros = data.registros;
+        storageAvailable = true;
+      }
+      if(!data || data.ok !== true){
+        const detalle = data && data.error ? data.error : 'El servidor rechazó el guardado.';
+        if(/duplicad/i.test(detalle)){
+          storageAvailable = false;
+          const msg = 'La hoja de Google tiene un registro repetido y por eso no se puede guardar nada. Avisa al administrador para que ejecute la auditoría de la hoja (auditarRegistros). Detalle: ' + detalle;
+          showBanner(msg);
+          pintarTodo();
+          return { ok: false, error: msg };
+        }
+        showBanner(detalle);
+        pintarTodo();
+        return { ok: false, conflicto: !!(data && data.conflicto), error: detalle };
+      }
+      pintarTodo();
+      return { ok: true, registros: registros };
+    }catch(e){
+      storageAvailable = false;
+      console.error('Error guardando', e);
+      const msg = 'No se guardó ningún cambio. Se bloquearon las acciones para proteger los registros. Actualiza la página. Detalle: ' + (e && e.message ? e.message : e);
+      showBanner(msg);
+      actualizarControlesGuardado();
+      return { ok: false, error: msg };
+    }finally{
+      escriturasEnCurso--;
+      generacionDatos++;
+      actualizarControlesGuardado();
+    }
+  });
+}
+
+async function guardarCambio(registro){
+  return enviarGuardado({ cambios: [prepararCambio(registro)] });
+}
+
+async function guardarNuevo(registro){
+  const cuerpo = Object.assign({}, registro);
+  delete cuerpo.id;
+  delete cuerpo.rev;
+  delete cuerpo.baseRev;
+  return enviarGuardado({ nuevos: [cuerpo] });
 }
 
 function showBanner(text){
@@ -1329,11 +1408,6 @@ function showBanner(text){
     }
   }
   el.textContent = '⚠ ' + text;
-}
-
-function nextId(){
-  if(registros.length === 0) return 1;
-  return Math.max(...registros.map(r=>r.id||0)) + 1;
 }
 
 async function crearSolicitud(){
@@ -1381,9 +1455,7 @@ async function crearSolicitud(){
   const dObj = new Date(fecha+'T00:00:00');
   const codigo = String(Math.floor(1000 + Math.random()*9000));
 
-  const id = nextId();
   const rec = {
-    id: id,
     estado: 'Pendiente',
     fecha: fecha,
     diaNombre: DIAS[dObj.getDay()],
@@ -1414,20 +1486,13 @@ async function crearSolicitud(){
     creadoEn: new Date().toISOString()
   };
 
-  registros.unshift(rec);
-  renderTable();
-  renderKpis();
-
-  const ok = await guardarRegistros();
-  if(ok){
-    mostrarCodigoConfirmacion(id, codigo);
+  const resultado = await guardarNuevo(rec);
+  if(resultado.ok){
+    const guardado = registros.find(r => r.creadoEn === rec.creadoEn && r.codigoConfirmacion === rec.codigoConfirmacion);
+    mostrarCodigoConfirmacion(guardado ? guardado.id : '—', codigo);
     limpiarFormSolicitud();
   }else{
-    registros = registros.filter(r=>r!==rec);
-    renderTable();
-    renderKpis();
-    renderLiberarLista();
-    showMsgIn('solMsg', 'La solicitud no se guardó. Actualiza la página y vuelve a intentarlo.', false);
+    showMsgIn('solMsg', resultado.error || 'La solicitud no se guardó. Actualiza la página y vuelve a intentarlo.', false);
   }
  }catch(err){
    console.error(err);
@@ -1510,22 +1575,14 @@ async function liberarServicio(id){
   const fechaLiberado = todayStr();
   const horaLiberado = nowTimeStr();
   const anterior = registros[idx];
-  registros[idx] = {
+  const cambio = {
     ...anterior,
     estado: 'Liberado',
     fechaLiberado, horaLiberado, liberadoPor,
-    historial: [...registros[idx].historial, {accion:'Liberado', por:liberadoPor, tecnicos:[], fecha:fechaLiberado, hora:horaLiberado}]
+    historial: [...(anterior.historial||[]), {accion:'Liberado', por:liberadoPor, tecnicos:[], fecha:fechaLiberado, hora:horaLiberado}]
   };
-  renderTable(); renderKpis();
-  const ok = await guardarRegistros();
-  if(ok){
-    inputNombre.value = '';
-  }else{
-    registros[idx] = anterior;
-    renderTable(); renderKpis();
-  }
-  renderLiberarLista();
-  if(!ok) showBanner('Se liberó el servicio pero no se sincronizó con el guardado compartido.');
+  const resultado = await guardarCambio(cambio);
+  if(resultado.ok) inputNombre.value = '';
 }
 
 let panelOpen = null; // {id, action: 'iniciar'|'reanudar'|'agregar'}
@@ -1710,6 +1767,12 @@ function renderTecnicoView(){
   const cerrados = registros.filter(r=>
     r.estado==='Cerrado' && (r.tecnicosHistorico||[]).includes(nombre)
   ).slice(0, 10);
+  const activo = document.activeElement;
+  const activoId = activo && activo.id && activo.id.indexOf('codigo-')===0 ? activo.id : '';
+  const codigosEscritos = {};
+  document.querySelectorAll('input[id^="codigo-"]').forEach(input=>{
+    if(input.value) codigosEscritos[input.id] = input.value;
+  });
 
   boxPorConfirmar.style.display = 'block';
   document.getElementById('tecnicoEmptyPorConfirmar').style.display = porConfirmar.length ? 'none' : 'block';
@@ -1754,6 +1817,18 @@ function renderTecnicoView(){
       </div>
     </div>
   `).join('');
+  Object.keys(codigosEscritos).forEach(id=>{
+    const input = document.getElementById(id);
+    if(input) input.value = codigosEscritos[id];
+  });
+  if(activoId){
+    const otraVez = document.getElementById(activoId);
+    if(otraVez){
+      otraVez.focus();
+      const n = otraVez.value.length;
+      if(otraVez.setSelectionRange) otraVez.setSelectionRange(n, n);
+    }
+  }
 }
 
 async function confirmarLlegada(id){
@@ -1761,23 +1836,25 @@ async function confirmarLlegada(id){
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
   const input = document.getElementById('codigo-'+id);
+  if(!input) return;
   const val = (input.value||'').trim();
   const msgId = 'codigoMsg-'+id;
+  const actual = registros[idx];
 
-  if(registros[idx].confirmadoEnSitio || registros[idx].fechaInicio){
+  if(actual.confirmadoEnSitio || actual.fechaInicio){
     showMsgIn(msgId, 'Este servicio ya está confirmado en sitio.', false);
     return;
   }
-  if(registros[idx].estado !== 'Asignado'){
+  if(actual.estado !== 'Asignado'){
     showMsgIn(msgId, 'Solo se confirma llegada cuando el ticket está Asignado.', false);
     return;
   }
-  if(!(registros[idx].tecnicosActivos||[]).length){
+  if(!(actual.tecnicosActivos||[]).length){
     showMsgIn(msgId, 'No hay técnicos asignados.', false);
     return;
   }
 
-  if(val !== registros[idx].codigoConfirmacion){
+  if(String(val) !== String(actual.codigoConfirmacion)){
     showMsgIn(msgId, 'Código incorrecto. Pídeselo de nuevo al solicitante.', false);
     input.value = '';
     input.focus();
@@ -1791,23 +1868,20 @@ async function confirmarLlegada(id){
     btnLlegada.textContent = 'Confirmando…';
   }
   try{
-  const fechaInicio = todayStr();
-  const horaInicio = nowTimeStr();
-  const espera = diffHoursMin(registros[idx].fecha, registros[idx].horaSolicita, fechaInicio, horaInicio);
-
-  registros[idx] = {
-    ...registros[idx],
-    estado: 'En reparación',
-    confirmadoEnSitio: true,
-    fechaInicio, horaInicio,
-    esperaMin: espera ? espera.totalMin : null,
-    esperaH: espera ? Number(espera.totalH.toFixed(2)) : null,
-    historial: [...registros[idx].historial, {accion:'Confirmado en sitio', tecnicos:registros[idx].tecnicosActivos, fecha:fechaInicio, hora:horaInicio}]
-  };
-
-  const ok = await guardarRegistros();
-  renderTecnicoView();
-  if(!ok) showBanner('Se confirmó la llegada pero no se sincronizó con el guardado compartido.');
+    const fechaInicio = todayStr();
+    const horaInicio = nowTimeStr();
+    const espera = diffHoursMin(actual.fecha, actual.horaSolicita, fechaInicio, horaInicio);
+    const cambio = {
+      ...actual,
+      estado: 'En reparación',
+      confirmadoEnSitio: true,
+      fechaInicio, horaInicio,
+      esperaMin: espera ? espera.totalMin : null,
+      esperaH: espera ? Number(espera.totalH.toFixed(2)) : null,
+      historial: [...(actual.historial||[]), {accion:'Confirmado en sitio', tecnicos:actual.tecnicosActivos, fecha:fechaInicio, hora:horaInicio}]
+    };
+    const resultado = await guardarCambio(cambio);
+    if(!resultado.ok) showMsgIn(msgId, resultado.error || 'No se confirmó la llegada.', false);
   }finally{
     delete confirmandoLlegada[id];
     actualizarControlesGuardado();
@@ -1830,21 +1904,19 @@ async function confirmarInicio(id){
   }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
+  const actual = registros[idx];
   const fechaAsignado = todayStr();
   const horaAsignado = nowTimeStr();
-
-  registros[idx] = {
-    ...registros[idx],
+  const cambio = {
+    ...actual,
     estado: 'Asignado',
     fechaAsignado, horaAsignado,
     tecnicosActivos: elegidos,
-    tecnicosHistorico: Array.from(new Set([...(registros[idx].tecnicosHistorico||[]), ...elegidos])),
-    historial: [...registros[idx].historial, {accion:'Asignado', tecnicos:elegidos, fecha:fechaAsignado, hora:horaAsignado}]
+    tecnicosHistorico: Array.from(new Set([...(actual.tecnicosHistorico||[]), ...elegidos])),
+    historial: [...(actual.historial||[]), {accion:'Asignado', tecnicos:elegidos, fecha:fechaAsignado, hora:horaAsignado}]
   };
   panelOpen = null;
-  renderTable(); renderKpis(); renderTicketLists();
-  const ok = await guardarRegistros();
-  if(!ok) showBanner('Se asignó el técnico pero no se sincronizó con el guardado compartido.');
+  await guardarCambio(cambio);
 }
 
 async function confirmarAgregar(id){
@@ -1857,65 +1929,60 @@ async function confirmarAgregar(id){
   }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
-  const nuevosActivos = Array.from(new Set([...registros[idx].tecnicosActivos, ...elegidos]));
-  const nuevoHistorico = Array.from(new Set([...(registros[idx].tecnicosHistorico||[]), ...elegidos]));
-  registros[idx] = {
-    ...registros[idx],
+  const actual = registros[idx];
+  const nuevosActivos = Array.from(new Set([...(actual.tecnicosActivos||[]), ...elegidos]));
+  const nuevoHistorico = Array.from(new Set([...(actual.tecnicosHistorico||[]), ...elegidos]));
+  const cambio = {
+    ...actual,
     tecnicosActivos: nuevosActivos,
     tecnicosHistorico: nuevoHistorico,
-    historial: [...registros[idx].historial, {accion:'Técnico agregado', tecnicos:elegidos, fecha:todayStr(), hora:nowTimeStr()}]
+    historial: [...(actual.historial||[]), {accion:'Técnico agregado', tecnicos:elegidos, fecha:todayStr(), hora:nowTimeStr()}]
   };
   panelOpen = null;
-  renderTicketLists();
-  const ok = await guardarRegistros();
-  if(!ok) showBanner('Se sumó el técnico pero no se sincronizó con el guardado compartido.');
+  await guardarCambio(cambio);
 }
 
 async function cancelarAsignacion(id){
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
-  registros[idx] = {
-    ...registros[idx],
+  const actual = registros[idx];
+  const cambio = {
+    ...actual,
     estado: 'Pendiente',
     tecnicosActivos: [],
     fechaAsignado:'', horaAsignado:'',
-    historial: [...registros[idx].historial, {accion:'Asignación cancelada', tecnicos:[], fecha:todayStr(), hora:nowTimeStr()}]
+    historial: [...(actual.historial||[]), {accion:'Asignación cancelada', tecnicos:[], fecha:todayStr(), hora:nowTimeStr()}]
   };
-  renderTable(); renderKpis(); renderTicketLists();
-  const ok = await guardarRegistros();
-  if(!ok) showBanner('Se canceló la asignación pero no se sincronizó con el guardado compartido.');
+  await guardarCambio(cambio);
 }
 
 async function quitarTecnico(id, nombre){
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
-  const restantes = (registros[idx].tecnicosActivos||[]).filter(t=>t!==nombre);
+  const actual = registros[idx];
+  const restantes = (actual.tecnicosActivos||[]).filter(t=>t!==nombre);
   const nuevoEstado = restantes.length===0 ? 'Pausado' : 'En reparación';
-  let rec = {
-    ...registros[idx],
+  let cambio = {
+    ...actual,
     estado: nuevoEstado,
     tecnicosActivos: restantes,
-    historial: [...registros[idx].historial, {accion: restantes.length===0 ? 'Se retiró (servicio pausado)' : 'Se retiró', tecnicos:[nombre], fecha:todayStr(), hora:nowTimeStr()}]
+    historial: [...(actual.historial||[]), {accion: restantes.length===0 ? 'Se retiró (servicio pausado)' : 'Se retiró', tecnicos:[nombre], fecha:todayStr(), hora:nowTimeStr()}]
   };
-  if(nuevoEstado==='Pausado') rec = marcarInicioPausa(rec);
-  registros[idx] = rec;
-  renderTable(); renderKpis(); renderTicketLists();
-  const ok = await guardarRegistros();
-  if(!ok) showBanner('Se actualizó el técnico pero no se sincronizó con el guardado compartido.');
+  if(nuevoEstado==='Pausado') cambio = marcarInicioPausa(cambio);
+  await guardarCambio(cambio);
 }
 
 async function pausarReparacion(id){
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
-  registros[idx] = marcarInicioPausa({
-    ...registros[idx],
+  const actual = registros[idx];
+  const cambio = marcarInicioPausa({
+    ...actual,
     estado: 'Pausado',
     tecnicosActivos: [],
-    historial: [...registros[idx].historial, {accion:'Pausado', tecnicos:[], fecha:todayStr(), hora:nowTimeStr()}]
+    historial: [...(actual.historial||[]), {accion:'Pausado', tecnicos:[], fecha:todayStr(), hora:nowTimeStr()}]
   });
-  renderTable(); renderKpis(); renderTicketLists();
-  const ok = await guardarRegistros();
-  if(!ok) showBanner('Se pausó el servicio pero no se sincronizó con el guardado compartido.');
+  await guardarCambio(cambio);
 }
 
 async function confirmarReanudacion(id){
@@ -1928,20 +1995,19 @@ async function confirmarReanudacion(id){
   }
   const idx = registros.findIndex(r=>r.id===id);
   if(idx===-1) return;
-  const pausaCerrada = cerrarIntervaloPausa(registros[idx]);
-  const nuevoHistorico = Array.from(new Set([...(registros[idx].tecnicosHistorico||[]), ...elegidos]));
-  registros[idx] = {
-    ...registros[idx],
+  const actual = registros[idx];
+  const pausaCerrada = cerrarIntervaloPausa(actual);
+  const nuevoHistorico = Array.from(new Set([...(actual.tecnicosHistorico||[]), ...elegidos]));
+  const cambio = {
+    ...actual,
     ...pausaCerrada,
     estado: 'En reparación',
     tecnicosActivos: elegidos,
     tecnicosHistorico: nuevoHistorico,
-    historial: [...registros[idx].historial, {accion:'Reanudado', tecnicos:elegidos, fecha:todayStr(), hora:nowTimeStr()}]
+    historial: [...(actual.historial||[]), {accion:'Reanudado', tecnicos:elegidos, fecha:todayStr(), hora:nowTimeStr()}]
   };
   panelOpen = null;
-  renderTable(); renderKpis(); renderTicketLists();
-  const ok = await guardarRegistros();
-  if(!ok) showBanner('Se reanudó el servicio pero no se sincronizó con el guardado compartido.');
+  await guardarCambio(cambio);
 }
 
 function abrirCierre(id){
@@ -2022,7 +2088,7 @@ async function cerrarServicio(){
     return;
   }
 
-  registros[idx] = {
+  const cambio = {
     ...rec,
     estado: 'Cerrado',
     fechaFin, horaFin,
@@ -2038,23 +2104,18 @@ async function cerrarServicio(){
     mantenimiento: document.getElementById('f_mantenimiento').value,
     refacciones: refsValidas.refacciones,
     observaciones: document.getElementById('f_observaciones').value,
-    historial: [...rec.historial, {accion:'Cerrado', tecnicos:[], fecha:fechaFin, hora:horaFin}],
+    historial: [...(rec.historial||[]), {accion:'Cerrado', tecnicos:[], fecha:fechaFin, hora:horaFin}],
     cerradoEn: new Date().toISOString()
   };
   panelOpen = null;
-
-  renderTable();
-  renderKpis();
-  renderTicketLists();
-
-  const ok = await guardarRegistros();
-  if(ok){
-    showMsgIn('cierreMsg', 'Servicio #' + selectedTicketId + ' cerrado correctamente (' + horaFin + ').', true);
+  const resultado = await guardarCambio(cambio);
+  if(resultado.ok){
+    showMsgIn('cierreMsg', 'Servicio #' + rec.id + ' cerrado correctamente (' + horaFin + ').', true);
+    document.getElementById('cierreCard').style.display = 'none';
+    selectedTicketId = null;
   }else{
-    showMsgIn('cierreMsg', 'Cierre guardado en esta sesión, pero no se pudo sincronizar. Expórtalo a CSV para no perderlo.', false);
+    showMsgIn('cierreMsg', resultado.error || 'No se pudo cerrar el servicio.', false);
   }
-  document.getElementById('cierreCard').style.display = 'none';
-  selectedTicketId = null;
  }catch(err){
    console.error(err);
    showMsgIn('cierreMsg', 'Ocurrió un error inesperado al guardar: ' + (err && err.message ? err.message : err), false);
@@ -2102,18 +2163,23 @@ function renderTable(){
 }
 
 function renderKpis(){
-  document.getElementById('kpiTotal').textContent = registros.length;
-  document.getElementById('kpiPendientes').textContent = registros.filter(r=>r.estado==='Pendiente').length;
-  document.getElementById('kpiAsignados').textContent = registros.filter(r=>r.estado==='Asignado').length;
-  document.getElementById('kpiEnCurso').textContent = registros.filter(r=>r.estado==='En reparación').length;
-  document.getElementById('kpiPausados').textContent = registros.filter(r=>r.estado==='Pausado').length;
-  const pausadosViejosN = registros.filter(esPausadoViejo).length;
+  const inputSemana = document.getElementById('exportSemana');
+  const semana = ((inputSemana && inputSemana.value) || '').trim() || isoSemanaClave(new Date());
+  const etiqueta = document.getElementById('kpiSemanaLabel');
+  if(etiqueta) etiqueta.textContent = 'Semana ' + semana;
+  const lista = registros.filter(r=>claveSemanaDeFecha(r.fecha)===semana);
+  document.getElementById('kpiTotal').textContent = lista.length;
+  document.getElementById('kpiPendientes').textContent = lista.filter(r=>r.estado==='Pendiente').length;
+  document.getElementById('kpiAsignados').textContent = lista.filter(r=>r.estado==='Asignado').length;
+  document.getElementById('kpiEnCurso').textContent = lista.filter(r=>r.estado==='En reparación').length;
+  document.getElementById('kpiPausados').textContent = lista.filter(r=>r.estado==='Pausado').length;
+  const pausadosViejosN = lista.filter(esPausadoViejo).length;
   const kpiViejos = document.getElementById('kpiPausadosViejos');
   const kpiViejosBox = document.getElementById('kpiPausadosViejosBox');
   if(kpiViejos) kpiViejos.textContent = pausadosViejosN;
   if(kpiViejosBox) kpiViejosBox.classList.toggle('warn', pausadosViejosN>0);
 
-  const conEspera = registros.filter(r=>{
+  const conEspera = lista.filter(r=>{
     if(r.esperaH==null) return false;
     const maquina = normalizarTexto(r.maquina);
     return maquina!=='SERVICIOS' && maquina!=='NO APLICA';
@@ -2121,7 +2187,7 @@ function renderKpis(){
   document.getElementById('kpiEspera').textContent = conEspera.length
     ? (conEspera.reduce((s,r)=>s+r.esperaH,0)/conEspera.length).toFixed(1) + ' h' : '0.0 h';
 
-  const cerrados = registros.filter(r=>{
+  const cerrados = lista.filter(r=>{
     if(r.reparacionH==null) return false;
     if(r.estado!=='Cerrado' && r.estado!=='Liberado') return false;
     const maquina = normalizarTexto(r.maquina);
