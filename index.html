@@ -354,6 +354,7 @@
     </div>
 
     <div id="supervisorContent" style="display:none;">
+      <p class="hint" id="kpiSemanaLabel" style="margin:0 0 8px;">Semana en curso</p>
       <div class="kpis" id="kpiRow">
         <div class="kpi"><div class="n" id="kpiTotal">0</div><div class="l">Total</div></div>
         <div class="kpi"><div class="n" id="kpiPendientes">0</div><div class="l">Esperando asignar</div></div>
@@ -479,7 +480,7 @@
           <input type="text" id="searchBox" placeholder="Buscar por máquina, área, solicitante…" oninput="renderTable()">
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <label class="export-semana">Semana
-              <input type="week" id="exportSemana">
+              <input type="week" id="exportSemana" onchange="renderKpis()">
             </label>
             <button class="btn-export" onclick="exportarCSV()">⬇ Exportar a Excel (CSV)</button>
             <button class="btn-ghost" onclick="cargarRegistros(true)">↻ Actualizar</button>
@@ -2072,18 +2073,23 @@ function renderTable(){
 }
 
 function renderKpis(){
-  document.getElementById('kpiTotal').textContent = registros.length;
-  document.getElementById('kpiPendientes').textContent = registros.filter(r=>r.estado==='Pendiente').length;
-  document.getElementById('kpiAsignados').textContent = registros.filter(r=>r.estado==='Asignado').length;
-  document.getElementById('kpiEnCurso').textContent = registros.filter(r=>r.estado==='En reparación').length;
-  document.getElementById('kpiPausados').textContent = registros.filter(r=>r.estado==='Pausado').length;
-  const pausadosViejosN = registros.filter(esPausadoViejo).length;
+  const inputSemana = document.getElementById('exportSemana');
+  const semana = ((inputSemana && inputSemana.value) || '').trim() || isoSemanaClave(new Date());
+  const etiqueta = document.getElementById('kpiSemanaLabel');
+  if(etiqueta) etiqueta.textContent = 'Semana ' + semana;
+  const lista = registros.filter(r=>claveSemanaDeFecha(r.fecha)===semana);
+  document.getElementById('kpiTotal').textContent = lista.length;
+  document.getElementById('kpiPendientes').textContent = lista.filter(r=>r.estado==='Pendiente').length;
+  document.getElementById('kpiAsignados').textContent = lista.filter(r=>r.estado==='Asignado').length;
+  document.getElementById('kpiEnCurso').textContent = lista.filter(r=>r.estado==='En reparación').length;
+  document.getElementById('kpiPausados').textContent = lista.filter(r=>r.estado==='Pausado').length;
+  const pausadosViejosN = lista.filter(esPausadoViejo).length;
   const kpiViejos = document.getElementById('kpiPausadosViejos');
   const kpiViejosBox = document.getElementById('kpiPausadosViejosBox');
   if(kpiViejos) kpiViejos.textContent = pausadosViejosN;
   if(kpiViejosBox) kpiViejosBox.classList.toggle('warn', pausadosViejosN>0);
 
-  const conEspera = registros.filter(r=>{
+  const conEspera = lista.filter(r=>{
     if(r.esperaH==null) return false;
     const maquina = normalizarTexto(r.maquina);
     return maquina!=='SERVICIOS' && maquina!=='NO APLICA';
@@ -2091,7 +2097,7 @@ function renderKpis(){
   document.getElementById('kpiEspera').textContent = conEspera.length
     ? (conEspera.reduce((s,r)=>s+r.esperaH,0)/conEspera.length).toFixed(1) + ' h' : '0.0 h';
 
-  const cerrados = registros.filter(r=>{
+  const cerrados = lista.filter(r=>{
     if(r.reparacionH==null) return false;
     if(r.estado!=='Cerrado' && r.estado!=='Liberado') return false;
     const maquina = normalizarTexto(r.maquina);
