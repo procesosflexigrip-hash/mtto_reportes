@@ -236,6 +236,10 @@ function doPost(e) {
     eventos = detectarEventosTelegram_(hoja.registros, fusion);
     respaldarRegistros_(hoja.registros);
     escribirAfectados_(hoja.sheet, hoja.filas, fusionCambios.aplicados, conNuevos.creados);
+    // Sin esto, Sheets aplaza la escritura y el candado se suelta antes.
+    // Otra solicitud leería el ID y la máquina anteriores, repetiría el
+    // aviso de Telegram y pisaría la fila recién insertada.
+    SpreadsheetApp.flush();
   } catch (err) {
     return respond_({ ok: false, error: String(err) });
   } finally {
