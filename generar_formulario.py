@@ -2214,9 +2214,9 @@ function exportarCSV(){
     alert('Elige la semana que quieres exportar.');
     return;
   }
-  const lista = registros.filter(r=>claveSemanaDeFecha(r.fecha)===semana);
+  const lista = registros.filter(r=>claveSemanaDeFecha(r.fechaFin)===semana);
   if(lista.length===0){
-    alert('No hay registros solicitados en la semana '+semana+'.');
+    alert('No hay servicios cerrados en la semana '+semana+'.');
     return;
   }
 
