@@ -84,6 +84,7 @@ turnos = ["1°", "2°", "3°"]  # <-- si cambian los turnos, edita esta línea
 turnos_js = json.dumps(turnos, ensure_ascii=False)
 
 GERENTE_MANTENIMIENTO = "JORGE ADRIAN VEGA BARON"  # <-- solo este solicitante puede elegir el Tipo; todos los demás quedan como CORRECTIVO
+GERENTE_SGI = "ADRIANA CRUZ GARCIA"  # <-- entra con su PIN de técnico, ve SERVICIOS e INFRAESTRUCTURA y no se le puede asignar servicio
 
 SUPERVISOR_PIN = "2580"  # <-- CAMBIA ESTE PIN. Da acceso a asignar/cerrar servicios y ver todos los registros.
 SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzqFLePhr_RQo1aZeHO3BLJZDx6RCcmGekwBZSmhpPW0K-7FGX293qtUt1pKKDhGQjV/exec"  # <-- ya configurada
@@ -452,8 +453,8 @@ html = """<!DOCTYPE html>
         <div class="kpi"><div class="n" id="kpiEnCurso">0</div><div class="l">En reparación</div></div>
         <div class="kpi"><div class="n" id="kpiPausados">0</div><div class="l">Pausados</div></div>
         <div class="kpi" id="kpiPausadosViejosBox"><div class="n" id="kpiPausadosViejos">0</div><div class="l">Pausados &gt; 8 h</div></div>
-        <div class="kpi" title="No incluye máquinas SERVICIOS ni NO APLICA"><div class="n" id="kpiEspera">0.0 h</div><div class="l">Espera promedio</div></div>
-        <div class="kpi" title="No incluye máquinas SERVICIOS ni NO APLICA"><div class="n" id="kpiReparacion">0.0 h</div><div class="l">Reparación promedio</div></div>
+        <div class="kpi" title="No incluye máquinas SERVICIOS, INFRAESTRUCTURA ni NO APLICA"><div class="n" id="kpiEspera">0.0 h</div><div class="l">Espera promedio</div></div>
+        <div class="kpi" title="No incluye máquinas SERVICIOS, INFRAESTRUCTURA ni NO APLICA"><div class="n" id="kpiReparacion">0.0 h</div><div class="l">Reparación promedio</div></div>
       </div>
 
       <div class="card">
@@ -610,7 +611,25 @@ html = """<!DOCTYPE html>
     <div id="tecnicoContent" style="display:none;">
       <div class="card">
         <h2><span class="num">🔧</span> Hola, <span id="tecnicoSaludoNombre"></span></h2>
-        <p class="hint">Solo puedes consultar tus propias asignaciones — esta vista no permite modificar nada.</p>
+        <p class="hint" id="tecnicoSaludoHint">Solo puedes consultar tus propias asignaciones — esta vista no permite modificar nada.</p>
+      </div>
+
+      <div class="card" id="tecnicoSgi" style="display:none;">
+        <div class="table-toolbar">
+          <h2 style="margin:0;"><span class="num">📋</span> Servicios e infraestructura</h2>
+          <button class="btn-export" onclick="exportarSgiCSV()">⬇ Descargar a Excel (CSV)</button>
+        </div>
+        <div class="table-scroll">
+          <table style="min-width:640px;">
+            <thead>
+              <tr>
+                <th>Estado</th><th>Fecha solicitud</th><th>Área</th><th>Máquina</th><th>Solicitante</th><th>Fecha de cierre</th>
+              </tr>
+            </thead>
+            <tbody id="tecnicoSgiTbody"></tbody>
+          </table>
+          <div class="empty" id="tecnicoSgiEmpty" style="display:none;">No hay servicios de SERVICIOS ni INFRAESTRUCTURA.</div>
+        </div>
       </div>
 
       <div class="card" id="tecnicoPorConfirmar" style="display:none;">
@@ -641,6 +660,7 @@ const TURNOS = __TURNOS_JSON__;
 const STORAGE_KEY = 'mant-registros-flexigrip';
 const SUPERVISOR_PIN = "__SUPERVISOR_PIN__"; // <-- CAMBIA ESTE PIN
 const GERENTE_MANTENIMIENTO = "__GERENTE_MANTENIMIENTO__"; // <-- solo él puede elegir Tipo distinto de CORRECTIVO
+const GERENTE_SGI = "__GERENTE_SGI__"; // <-- solo consulta SERVICIOS e INFRAESTRUCTURA; no se le asignan servicios
 const SHEET_WEBAPP_URL = "__SHEET_WEBAPP_URL__"; // <-- pega aquí la URL de tu Apps Script (termina en /exec)
 
 const DIAS = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
@@ -790,7 +810,7 @@ function initAutocomplete(inputId, values){
   });
 }
 
-const TECNICOS = LISTS.TECNICO; // roster de técnicos de mantenimiento
+const TECNICOS = (LISTS.TECNICO||[]).filter(t=>!esGerenteSgi(t)); // roster de técnicos asignables
 const TECNICOS_PIN = LISTS.TECNICOS_PIN || []; // [{nombre, pin}, ...]
 const PROBLEMA_MAX = 200;
 let refaccionesCierre = [];
@@ -1439,8 +1459,10 @@ async function crearSolicitud(){
     return;
   }
   const problema = document.getElementById('f_problema').value;
-  const servicioAbierto = normalizarTexto(maquina)==='SERVICIOS' ? null : registros.find(r=>
-    normalizarTexto(r.maquina)===normalizarTexto(maquina) && r.estado!=='Liberado'
+  const maquinaClave = normalizarTexto(maquina);
+  const sinBloqueo = maquinaClave==='SERVICIOS' || maquinaClave==='INFRAESTRUCTURA';
+  const servicioAbierto = sinBloqueo ? null : registros.find(r=>
+    normalizarTexto(r.maquina)===maquinaClave && r.estado!=='Liberado'
   );
   if(servicioAbierto){
     const ayuda = servicioAbierto.estado==='Cerrado'
@@ -1749,13 +1771,28 @@ function renderTecnicoView(){
   const boxPorConfirmar = document.getElementById('tecnicoPorConfirmar');
   const boxActivos = document.getElementById('tecnicoAsignados');
   const boxCerrados = document.getElementById('tecnicoCerrados');
+  const boxSgi = document.getElementById('tecnicoSgi');
+  const hint = document.getElementById('tecnicoSaludoHint');
 
   if(!nombre){
     boxPorConfirmar.style.display = 'none';
     boxActivos.style.display = 'none';
     boxCerrados.style.display = 'none';
+    boxSgi.style.display = 'none';
     return;
   }
+
+  if(esGerenteSgi(nombre)){
+    boxPorConfirmar.style.display = 'none';
+    boxActivos.style.display = 'none';
+    boxCerrados.style.display = 'none';
+    hint.textContent = 'Consulta de todos los servicios de SERVICIOS e INFRAESTRUCTURA — esta vista no permite modificar nada.';
+    renderTablaSgi();
+    boxSgi.style.display = 'block';
+    return;
+  }
+  boxSgi.style.display = 'none';
+  hint.textContent = 'Solo puedes consultar tus propias asignaciones — esta vista no permite modificar nada.';
 
   const porConfirmar = registros.filter(r=>
     r.estado==='Asignado' && (r.tecnicosActivos||[]).includes(nombre)
@@ -1831,6 +1868,63 @@ function renderTecnicoView(){
   }
 }
 
+function esGerenteSgi(nombre){
+  return normalizarTexto(nombre)===normalizarTexto(GERENTE_SGI);
+}
+
+function seleccionIncluyeGerenteSgi(elegidos){
+  if(!(elegidos||[]).some(esGerenteSgi)) return false;
+  alert(GERENTE_SGI+' solo tiene acceso de consulta; no se le puede asignar un servicio.');
+  return true;
+}
+
+function registrosSgi(){
+  return registros
+    .filter(r=>{
+      const maquina = normalizarTexto(r.maquina);
+      return maquina==='SERVICIOS' || maquina==='INFRAESTRUCTURA';
+    })
+    .sort((a,b)=>String(b.fecha||'').localeCompare(String(a.fecha||'')) || (Number(b.id)||0)-(Number(a.id)||0));
+}
+
+function renderTablaSgi(){
+  const lista = registrosSgi();
+  document.getElementById('tecnicoSgiEmpty').style.display = lista.length ? 'none' : 'block';
+  document.getElementById('tecnicoSgiTbody').innerHTML = lista.map(r=>`
+    <tr>
+      <td><span class="tag ${estadoClass(r.estado)}">${r.estado}</span></td>
+      <td>${r.fecha||'—'}</td>
+      <td>${r.area||'—'}</td>
+      <td>${r.maquina||'—'}</td>
+      <td>${r.solicitante||'—'}</td>
+      <td>${r.fechaFin||'—'}</td>
+    </tr>
+  `).join('');
+}
+
+function exportarSgiCSV(){
+  const lista = registrosSgi();
+  if(lista.length===0){
+    alert('No hay servicios de SERVICIOS ni INFRAESTRUCTURA para descargar.');
+    return;
+  }
+  const headers = ['ESTADO','FECHA SOLICITUD','AREA','MAQUINA','SOLICITANTE','FECHA DE CIERRE'];
+  const rows = lista.map(r=>[r.estado, r.fecha, r.area, r.maquina, r.solicitante, r.fechaFin||'']);
+
+  let csv = headers.map(csvEscape).join(',') + '\\n';
+  csv += rows.map(row=>row.map(csvEscape).join(',')).join('\\n');
+
+  const blob = new Blob(['\\ufeff'+csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'SGI_servicios_infraestructura.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 async function confirmarLlegada(id){
   if(confirmandoLlegada[id]) return;
   const idx = registros.findIndex(r=>r.id===id);
@@ -1897,6 +1991,7 @@ function leerTecnicosSeleccionados(id){
 async function confirmarInicio(id){
   const elegidos = leerTecnicosSeleccionados(id);
   if(elegidos.length===0){ alert('Selecciona al menos un técnico.'); return; }
+  if(seleccionIncluyeGerenteSgi(elegidos)) return;
   const choque = tecnicosOcupadosEnSeleccion(id, elegidos);
   if(choque.length){
     alert('No se puede asignar: '+choque.join(', ')+' ya está en otro servicio. Debe quedar libre primero.');
@@ -1922,6 +2017,7 @@ async function confirmarInicio(id){
 async function confirmarAgregar(id){
   const elegidos = leerTecnicosSeleccionados(id);
   if(elegidos.length===0){ alert('Selecciona al menos un técnico.'); return; }
+  if(seleccionIncluyeGerenteSgi(elegidos)) return;
   const choque = tecnicosOcupadosEnSeleccion(id, elegidos);
   if(choque.length){
     alert('No se puede agregar: '+choque.join(', ')+' ya está en otro servicio. Debe quedar libre primero.');
@@ -1988,6 +2084,7 @@ async function pausarReparacion(id){
 async function confirmarReanudacion(id){
   const elegidos = leerTecnicosSeleccionados(id);
   if(elegidos.length===0){ alert('Selecciona al menos un técnico.'); return; }
+  if(seleccionIncluyeGerenteSgi(elegidos)) return;
   const choque = tecnicosOcupadosEnSeleccion(id, elegidos);
   if(choque.length){
     alert('No se puede reanudar: '+choque.join(', ')+' ya está en otro servicio. Debe quedar libre primero.');
@@ -2182,7 +2279,7 @@ function renderKpis(){
   const conEspera = lista.filter(r=>{
     if(r.esperaH==null) return false;
     const maquina = normalizarTexto(r.maquina);
-    return maquina!=='SERVICIOS' && maquina!=='NO APLICA';
+    return maquina!=='SERVICIOS' && maquina!=='INFRAESTRUCTURA' && maquina!=='NO APLICA';
   });
   document.getElementById('kpiEspera').textContent = conEspera.length
     ? (conEspera.reduce((s,r)=>s+r.esperaH,0)/conEspera.length).toFixed(1) + ' h' : '0.0 h';
@@ -2191,7 +2288,7 @@ function renderKpis(){
     if(r.reparacionH==null) return false;
     if(r.estado!=='Cerrado' && r.estado!=='Liberado') return false;
     const maquina = normalizarTexto(r.maquina);
-    return maquina!=='SERVICIOS' && maquina!=='NO APLICA';
+    return maquina!=='SERVICIOS' && maquina!=='INFRAESTRUCTURA' && maquina!=='NO APLICA';
   });
   document.getElementById('kpiReparacion').textContent = cerrados.length
     ? (cerrados.reduce((s,r)=>s+r.reparacionH,0)/cerrados.length).toFixed(1) + ' h' : '0.0 h';
@@ -2368,7 +2465,7 @@ cargarRegistros();
 </html>
 """
 
-html = html.replace('__LISTS_JSON__', lists_js).replace('__TURNOS_JSON__', turnos_js).replace('__SUPERVISOR_PIN__', SUPERVISOR_PIN).replace('__GERENTE_MANTENIMIENTO__', GERENTE_MANTENIMIENTO).replace('__SHEET_WEBAPP_URL__', SHEET_WEBAPP_URL)
+html = html.replace('__LISTS_JSON__', lists_js).replace('__TURNOS_JSON__', turnos_js).replace('__SUPERVISOR_PIN__', SUPERVISOR_PIN).replace('__GERENTE_MANTENIMIENTO__', GERENTE_MANTENIMIENTO).replace('__GERENTE_SGI__', GERENTE_SGI).replace('__SHEET_WEBAPP_URL__', SHEET_WEBAPP_URL)
 
 with open(SALIDA, 'w', encoding='utf-8') as f:
     f.write(html)

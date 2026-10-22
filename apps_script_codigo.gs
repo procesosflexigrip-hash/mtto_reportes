@@ -125,6 +125,8 @@ const SHEET_NAME = 'Registros';
 const CONTACTOS_SHEET = 'Contactos';
 const RESPALDOS_SHEET = 'Respaldos';
 const PROTECCION_DESC = 'Hoja escrita por el script — no editar a mano';
+// Entran con PIN de técnico solo para consultar; no se les asigna servicio.
+const TECNICOS_NO_ASIGNABLES = ['ADRIANA CRUZ GARCIA'];
 
 /**
  * Se ejecuta cuando el formulario pide los datos (fetch GET).
@@ -212,6 +214,10 @@ function doPost(e) {
         registros: hoja.registros
       });
     }
+    const noAsignables = validarTecnicosAsignables_(hoja.registros, conNuevos.registros);
+    if (!noAsignables.ok) {
+      return respond_({ ok: false, error: noAsignables.error, registros: hoja.registros });
+    }
     const tecnicos = validarTecnicosDisponibles_(null, conNuevos.registros);
     if (!tecnicos.ok) {
       return respond_({
@@ -234,7 +240,7 @@ function doPost(e) {
     }
 
     eventos = detectarEventosTelegram_(hoja.registros, fusion);
-    respaldarRegistros_(hoja.registros);
+    respaldarRegistros_(versionesAnteriores_(hoja.registros, fusionCambios.aplicados));
     escribirAfectados_(hoja.sheet, hoja.filas, fusionCambios.aplicados, conNuevos.creados);
     // Sin esto, Sheets aplaza la escritura y el candado se suelta antes.
     // Otra solicitud leería el ID y la máquina anteriores, repetiría el
@@ -553,19 +559,20 @@ function huellaRegistro_(r) {
 }
 
 /**
- * Trabajos generales (lámparas, pintura, etc.) no se amarran a una
- * máquina: pueden existir varios servicios abiertos a la vez.
+ * Trabajos generales (lámparas, pintura, infraestructura, etc.) no se
+ * amarran a una máquina: pueden existir varios servicios abiertos a la vez.
  */
 function esMaquinaSinBloqueo_(maquina) {
   const clave = String(maquina || '').trim().toUpperCase();
-  return clave === 'SERVICIOS' || clave === 'NO APLICA';
+  return clave === 'SERVICIOS' || clave === 'INFRAESTRUCTURA' || clave === 'NO APLICA';
 }
 
 /**
  * Segunda barrera para la regla "una máquina, un servicio abierto".
  * El navegador también lo valida, pero aquí se evita que dos equipos que
  * capturan al mismo tiempo abran dos tickets para la misma máquina.
- * SERVICIOS (y el nombre viejo NO APLICA) queda fuera: no ocupa ni se rechaza.
+ * SERVICIOS, INFRAESTRUCTURA (y el nombre viejo NO APLICA) quedan fuera:
+ * no ocupan ni se rechazan.
  */
 function validarMaquinasDisponibles_(anteriores, nuevos) {
   const anterioresPorId = mapaPorId_(anteriores);
@@ -629,6 +636,39 @@ function validarMaquinasFusion_(resultado, idsNuevos) {
   return { ok: true };
 }
 
+function claveNombre_(nombre) {
+  return String(nombre || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase();
+}
+
+/**
+ * Rechaza que alguien de TECNICOS_NO_ASIGNABLES entre a tecnicosActivos.
+ * Si ya estaba en la versión de la hoja se respeta: el bloqueo es para
+ * asignaciones nuevas, no para registros viejos.
+ */
+function validarTecnicosAsignables_(anteriores, resultado) {
+  const bloqueados = {};
+  TECNICOS_NO_ASIGNABLES.forEach(function (n) { bloqueados[claveNombre_(n)] = true; });
+  const anterioresPorId = mapaPorId_(anteriores);
+  for (var i = 0; i < (resultado || []).length; i++) {
+    const r = resultado[i];
+    if (!r) continue;
+    const prev = anterioresPorId[String(r.id)];
+    const antes = {};
+    ((prev && prev.tecnicosActivos) || []).forEach(function (n) { antes[claveNombre_(n)] = true; });
+    const lista = r.tecnicosActivos || [];
+    for (var j = 0; j < lista.length; j++) {
+      const clave = claveNombre_(lista[j]);
+      if (bloqueados[clave] && !antes[clave]) {
+        return {
+          ok: false,
+          error: String(lista[j]).trim() + ' no se puede asignar a un servicio: solo tiene acceso de consulta.'
+        };
+      }
+    }
+  }
+  return { ok: true };
+}
+
 function tecnicoOcupaServicio_(r) {
   return !!r && (r.estado === 'Asignado' || r.estado === 'En reparación');
 }
@@ -661,13 +701,27 @@ function validarTecnicosDisponibles_(anteriores, nuevos) {
   return { ok: true };
 }
 
+/** Filas de datos que se conservan en Respaldos. El encabezado no cuenta. */
+var RESPALDOS_MAX_FILAS = 8000;
+
 /**
- * Conserva una instantánea antes de cada reemplazo aceptado. La pestaña
- * Respaldos permite recuperar el JSON aunque el historial de Sheets no esté
- * disponible. No se respalda cuando la hoja todavía está vacía.
+ * La versión que está en la hoja de los servicios que este guardado va a
+ * reemplazar. Una solicitud nueva no tiene versión anterior.
+ */
+function versionesAnteriores_(registros, aplicados) {
+  const ids = aplicados || {};
+  return (registros || []).filter(function (r) {
+    return r && r.id != null && ids[String(r.id)];
+  });
+}
+
+/**
+ * Guarda solo la versión anterior de los servicios que cambian y deja la
+ * pestaña en las últimas RESPALDOS_MAX_FILAS. recuperarDesdeRespaldo sigue
+ * encontrando la copia más reciente. Aunque no haya nada que copiar, recorta
+ * el acumulado para no volver a llenar el libro.
  */
 function respaldarRegistros_(registros) {
-  if (!registros || registros.length === 0) return;
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(RESPALDOS_SHEET);
   if (!sheet) {
@@ -678,17 +732,23 @@ function respaldarRegistros_(registros) {
     sheet.setFrozenRows(1);
   }
 
-  const momento = new Date();
-  const filas = registros.map(function (r) {
-    return [
-      momento,
-      r.id,
-      r.estado || '',
-      r.maquina || '',
-      JSON.stringify(r)
-    ];
-  });
-  sheet.getRange(sheet.getLastRow() + 1, 1, filas.length, 5).setValues(filas);
+  if (registros && registros.length > 0) {
+    const momento = new Date();
+    const filas = registros.map(function (r) {
+      return [
+        momento,
+        r.id,
+        r.estado || '',
+        r.maquina || '',
+        JSON.stringify(r)
+      ];
+    });
+    sheet.getRange(sheet.getLastRow() + 1, 1, filas.length, 5).setValues(filas);
+  }
+  SpreadsheetApp.flush();
+
+  const exceso = sheet.getLastRow() - 1 - RESPALDOS_MAX_FILAS;
+  if (exceso > 0) sheet.deleteRows(2, exceso);
 }
 
 function mapaPorId_(registros) {

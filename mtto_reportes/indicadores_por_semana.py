@@ -17,7 +17,7 @@ CARPETA = Path(__file__).resolve().parent
 DESDE = (2026, 41)
 PATRON = re.compile(r"^MANT_(\d{4})-W(\d{2})\.csv$", re.IGNORECASE)
 SALIDA = CARPETA / "indicadores_por_semana.xlsx"
-EXCLUIR_MAQUINA = {"SERVICIOS", "NO APLICA"}
+EXCLUIR_MAQUINA = {"SERVICIOS", "INFRAESTRUCTURA", "NO APLICA"}
 
 COLUMNAS = [
     "Semana",
