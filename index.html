@@ -174,7 +174,8 @@
   .table-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;}
   .table-toolbar input[type=text]{max-width:260px;}
   .export-semana{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);}
-  .export-semana input[type=week]{width:auto;max-width:170px;padding:8px 10px;}
+  .export-semana input[type=week],
+  .export-semana input[type=date]{width:auto;max-width:170px;padding:8px 10px;}
   .table-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;}
   table{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1000px;}
   thead th{position:sticky;top:0;background:#0e141b;color:var(--muted);text-align:left;
@@ -482,6 +483,12 @@
             <label class="export-semana">Semana
               <input type="week" id="exportSemana" onchange="renderKpis()">
             </label>
+            <label class="export-semana">Desde
+              <input type="date" id="exportDesde">
+            </label>
+            <label class="export-semana">Hasta
+              <input type="date" id="exportHasta">
+            </label>
             <button class="btn-export" onclick="exportarCSV()">⬇ Exportar a Excel (CSV)</button>
             <button class="btn-ghost" onclick="cargarRegistros(true)">↻ Actualizar</button>
           </div>
@@ -532,7 +539,7 @@
           <table style="min-width:640px;">
             <thead>
               <tr>
-                <th>Estado</th><th>Fecha solicitud</th><th>Área</th><th>Máquina</th><th>Solicitante</th><th>Fecha de cierre</th>
+                <th>Estado</th><th>Fecha solicitud</th><th>Área</th><th>Máquina</th><th>Solicitante</th><th>Problema reportado</th><th>Fecha de cierre</th>
               </tr>
             </thead>
             <tbody id="tecnicoSgiTbody"></tbody>
@@ -1806,6 +1813,7 @@ function renderTablaSgi(){
       <td>${r.area||'—'}</td>
       <td>${r.maquina||'—'}</td>
       <td>${r.solicitante||'—'}</td>
+      <td>${r.problema||'—'}</td>
       <td>${r.fechaFin||'—'}</td>
     </tr>
   `).join('');
@@ -1817,8 +1825,8 @@ function exportarSgiCSV(){
     alert('No hay servicios de SERVICIOS ni INFRAESTRUCTURA para descargar.');
     return;
   }
-  const headers = ['ESTADO','FECHA SOLICITUD','AREA','MAQUINA','SOLICITANTE','FECHA DE CIERRE'];
-  const rows = lista.map(r=>[r.estado, r.fecha, r.area, r.maquina, r.solicitante, r.fechaFin||'']);
+  const headers = ['ESTADO','FECHA SOLICITUD','AREA','MAQUINA','SOLICITANTE','PROBLEMA REPORTADO','FECHA DE CIERRE'];
+  const rows = lista.map(r=>[r.estado, r.fecha, r.area, r.maquina, r.solicitante, r.problema||'', r.fechaFin||'']);
 
   let csv = headers.map(csvEscape).join(',') + '\n';
   csv += rows.map(row=>row.map(csvEscape).join(',')).join('\n');
@@ -2215,14 +2223,22 @@ function historialTexto(hist){
 }
 
 function exportarCSV(){
-  const semana = (document.getElementById('exportSemana').value || '').trim();
-  if(!semana){
-    alert('Elige la semana que quieres exportar.');
+  const desde = (document.getElementById('exportDesde').value || '').trim();
+  const hasta = (document.getElementById('exportHasta').value || '').trim();
+  if(!desde || !hasta){
+    alert('Elige las fechas Desde y Hasta que quieres exportar.');
     return;
   }
-  const lista = registros.filter(r=>claveSemanaDeFecha(r.fechaFin)===semana);
+  if(desde > hasta){
+    alert('La fecha Desde no puede ser posterior a Hasta.');
+    return;
+  }
+  const lista = registros.filter(r=>{
+    const fin = r.fechaFin || '';
+    return fin && fin >= desde && fin <= hasta;
+  });
   if(lista.length===0){
-    alert('No hay servicios cerrados en la semana '+semana+'.');
+    alert('No hay servicios cerrados entre '+desde+' y '+hasta+'.');
     return;
   }
 
@@ -2255,7 +2271,7 @@ function exportarCSV(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'MANT_' + semana + '.csv';
+  a.download = 'MANT_' + desde + '_' + hasta + '.csv';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -2291,6 +2307,8 @@ function fechaTurno(fechaFin, horaFin, turno){
 
 document.getElementById('r_fecha').value = fechaTurno(todayStr(), nowTimeStr(), '') || todayStr();
 document.getElementById('exportSemana').value = isoSemanaClave(new Date());
+document.getElementById('exportDesde').value = todayStr();
+document.getElementById('exportHasta').value = todayStr();
 
 function etiquetaTurnoResumen(turno){
   if(turno==='1°') return '1° (07:00–15:00)';
