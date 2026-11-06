@@ -220,6 +220,47 @@
   footer.note{margin-top:22px;font-size:12px;color:var(--muted);line-height:1.6;border-top:1px solid var(--line);padding-top:14px;}
   footer.note b{color:var(--text);}
 
+  body.tablero-abierto .wrap{max-width:1480px;}
+  .tablero-leyenda{display:flex;flex-wrap:wrap;gap:8px 14px;margin:0 0 12px;}
+  .tablero-leyenda span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);}
+  .swatch{width:12px;height:12px;border-radius:3px;display:inline-block;}
+  .swatch.trabajando{background:#3d9a62;}
+  .swatch.pendiente{background:#2f6fbe;}
+  .swatch.asignado{background:#6a4eb8;}
+  .swatch.enreparacion{background:#d86a1e;}
+  .swatch.pausado{background:#c4922a;}
+  .swatch.cerrado{background:#5c6770;}
+  .tablero-bar{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;margin-bottom:12px;}
+  .tablero-solo{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;}
+  .tablero-solo input{width:auto;}
+  .tablero-areas{display:flex;flex-wrap:wrap;gap:6px;}
+  .tablero-areas button{background:transparent;border:1px solid var(--line);color:var(--muted);
+    padding:6px 10px;font-size:12px;font-weight:600;border-radius:20px;}
+  .tablero-areas button.on{border-color:var(--accent2);color:var(--text);background:rgba(63,184,175,.12);}
+  .tablero-sgi{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;}
+  .tablero-sgi .pill{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:13px;color:var(--text);}
+  .tablero-sgi .pill b{color:var(--accent2);}
+  .area-bloque{margin-bottom:16px;}
+  .area-bloque h3{font-size:13px;margin:0 0 8px;color:var(--text);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;}
+  .area-bloque h3 span{color:var(--muted);font-weight:500;font-size:12px;}
+  .maq-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px;}
+  .maq{border:1px solid transparent;border-radius:8px;padding:10px 10px 8px;text-align:left;min-height:78px;font-weight:700;}
+  .maq .nombre{font-size:14px;line-height:1.2;}
+  .maq .est{font-size:11px;margin-top:4px;font-weight:600;opacity:.92;}
+  .maq .tiempo{font-size:11px;margin-top:2px;font-weight:600;font-variant-numeric:tabular-nums;}
+  .maq.trabajando{background:#3d9a62;color:#e9fff2;}
+  .maq.pendiente{background:#2f6fbe;color:#e8f1ff;}
+  .maq.asignado{background:#6a4eb8;color:#f3ecff;}
+  .maq.enreparacion{background:#d86a1e;color:#fff4ea;}
+  .maq.pausado{background:#c4922a;color:#fff8e8;}
+  .maq.cerrado{background:#5c6770;color:#f2f4f6;}
+  .maq.pausa-vieja{outline:2px solid #ff5d5d;outline-offset:1px;}
+  .maq.sel{box-shadow:0 0 0 2px #fff;}
+  .tablero-detalle{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:8px;}
+  .tablero-detalle h3{margin:0 0 6px;font-size:16px;}
+  .tablero-detalle p{margin:4px 0;font-size:13px;color:var(--text);}
+  .tablero-detalle .k{color:var(--muted);}
+
   @media (max-width:640px){
     .field.span2{grid-column:span 1;}
     .duration-box{flex-direction:column;align-items:flex-start;}
@@ -261,6 +302,38 @@
         <span class="t">Técnicos</span>
         <span class="s">Consultar tus asignaciones — requiere PIN</span>
       </button>
+      <button class="role-card" onclick="irA('tablero')">
+        <span class="ic">🟩</span>
+        <span class="t">Tablero de planta</span>
+        <span class="s">Estatus de las máquinas por área — cualquiera puede consultarlo</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ==================== TABLERO DE PLANTA (abierto a todos, sin PIN) ==================== -->
+  <div class="view" id="viewTablero">
+    <button class="back-link" onclick="irA('landing')">← Volver</button>
+    <div class="card">
+      <h2><span class="num">●</span> Estatus de máquinas</h2>
+      <p class="hint">Se actualiza solo desde la hoja de registros. Verde es una máquina sin servicio abierto. <span id="tableroActualizado"></span></p>
+      <div class="tablero-leyenda">
+        <span><i class="swatch trabajando"></i> Trabajando</span>
+        <span><i class="swatch pendiente"></i> Solicitud</span>
+        <span><i class="swatch asignado"></i> Asignado</span>
+        <span><i class="swatch enreparacion"></i> En reparación</span>
+        <span><i class="swatch pausado"></i> Pausado</span>
+        <span><i class="swatch cerrado"></i> Falta liberar</span>
+      </div>
+      <div class="tablero-bar">
+        <label class="tablero-solo">
+          <input type="checkbox" id="tableroSoloAtencion" onchange="renderTablero()">
+          Solo las que requieren atención
+        </label>
+        <div class="tablero-areas" id="tableroAreas"></div>
+      </div>
+      <div class="tablero-sgi" id="tableroSgi"></div>
+      <div id="tableroGrupos"></div>
+      <div id="tableroDetalle"></div>
     </div>
   </div>
 
@@ -834,14 +907,19 @@ function nowLabel(){
 }
 
 function irA(vista){
-  ['viewLanding','viewReporte','viewSupervisor','viewTecnico'].forEach(id=>{
+  ['viewLanding','viewReporte','viewSupervisor','viewTecnico','viewTablero'].forEach(id=>{
     document.getElementById(id).classList.toggle('active', id === 'view'+vista.charAt(0).toUpperCase()+vista.slice(1));
   });
+  document.body.classList.toggle('tablero-abierto', vista==='tablero');
   if(vista==='supervisor' && supervisorUnlocked){
     renderTicketLists();
   }
   if(vista==='tecnico' && tecnicoUnlocked){
     renderTecnicoView();
+  }
+  if(vista==='tablero'){
+    renderTablero();
+    cargarRegistros(true);
   }
   window.scrollTo(0,0);
 }
@@ -1198,6 +1276,7 @@ async function cargarRegistros(silent){
     renderTable();
     renderKpis();
     renderLiberarLista();
+    renderTablero();
     if(supervisorUnlocked) renderTicketLists();
     if(tecnicoUnlocked) renderTecnicoView();
     return;
@@ -1231,6 +1310,7 @@ async function cargarRegistros(silent){
   renderTable();
   renderKpis();
   renderLiberarLista();
+  renderTablero();
   if(supervisorUnlocked) renderTicketLists();
   if(tecnicoUnlocked) renderTecnicoView();
   actualizarControlesGuardado();
@@ -1258,6 +1338,7 @@ function pintarTodo(){
   renderTable();
   renderKpis();
   renderLiberarLista();
+  renderTablero();
   if(supervisorUnlocked) renderTicketLists();
   if(tecnicoUnlocked) renderTecnicoView();
   actualizarControlesGuardado();
@@ -2363,6 +2444,205 @@ function copiarResumen(){
 }
 
 
+let tableroAreaFiltro = '';
+let tableroMaquinaSel = '';
+
+function esMaquinaDeTablero(nombre){
+  const c = normalizarTexto(nombre);
+  return c!=='SERVICIOS' && c!=='INFRAESTRUCTURA' && c!=='NO APLICA';
+}
+
+function recenciaRegistro(r){
+  const fecha = r.fechaLiberado || r.fechaFin || r.fechaInicio || r.fechaAsignado || r.fecha || '';
+  const hora = r.horaLiberado || r.horaFin || r.horaInicio || r.horaAsignado || r.horaSolicita || '00:00';
+  return fecha + 'T' + hora + '|' + String(Number(r.id)||0).padStart(8,'0');
+}
+
+function fichaDeMaquina(nombre){
+  const clave = normalizarTexto(nombre);
+  const lista = registros.filter(r=>normalizarTexto(r.maquina)===clave);
+  const abierto = lista.filter(r=>r.estado && r.estado!=='Liberado')
+    .sort((a,b)=>(Number(b.id)||0)-(Number(a.id)||0))[0] || null;
+  if(abierto){
+    return {
+      nombre: nombre,
+      registro: abierto,
+      ultimo: abierto,
+      estado: abierto.estado,
+      area: (abierto.area||'').trim() || 'Sin área'
+    };
+  }
+  const ultimo = lista.slice().sort((a,b)=>recenciaRegistro(a)<recenciaRegistro(b)?1:-1)[0] || null;
+  const area = ultimo && (ultimo.area||'').trim() ? ultimo.area.trim() : 'Sin área';
+  return {nombre:nombre, registro:null, ultimo:ultimo, estado:'Trabajando', area:area};
+}
+
+function metaEstadoTablero(estado){
+  if(estado==='Pendiente') return {clave:'pendiente', etiqueta:'Solicitud'};
+  if(estado==='Asignado') return {clave:'asignado', etiqueta:'Asignado'};
+  if(estado==='En reparación') return {clave:'enreparacion', etiqueta:'En reparación'};
+  if(estado==='Pausado') return {clave:'pausado', etiqueta:'Pausado'};
+  if(estado==='Cerrado') return {clave:'cerrado', etiqueta:'Falta liberar'};
+  return {clave:'trabajando', etiqueta:'Trabajando'};
+}
+
+function inicioDeEstado(ficha){
+  const r = ficha.registro;
+  if(!r){
+    const u = ficha.ultimo;
+    if(u && u.fechaLiberado && u.horaLiberado) return {fecha:u.fechaLiberado, hora:u.horaLiberado};
+    return null;
+  }
+  if(r.estado==='Pendiente') return {fecha:r.fecha, hora:r.horaSolicita};
+  if(r.estado==='Asignado') return {fecha:r.fechaAsignado || r.fecha, hora:r.horaAsignado || r.horaSolicita};
+  if(r.estado==='En reparación') return {fecha:r.fechaInicio || r.fecha, hora:r.horaInicio || r.horaSolicita};
+  if(r.estado==='Pausado'){
+    const p = inicioPausaAbierta(r);
+    return p || {fecha:r.fechaInicio || r.fecha, hora:r.horaInicio || r.horaSolicita};
+  }
+  if(r.estado==='Cerrado') return {fecha:r.fechaFin, hora:r.horaFin};
+  return null;
+}
+
+function isoDesde(inicio){
+  if(!inicio || !inicio.fecha || !inicio.hora) return '';
+  return inicio.fecha + 'T' + inicio.hora;
+}
+
+function textoTiempoDesde(iso){
+  if(!iso) return '—';
+  const p = iso.split('T');
+  return formatoMinutos(minutosEntre(p[0], p[1], todayStr(), nowTimeStr()));
+}
+
+function fichasTablero(){
+  return (LISTS.MAQUINA||[]).filter(esMaquinaDeTablero).map(fichaDeMaquina);
+}
+
+function ordenarAreasTablero(nombres){
+  const catalogo = LISTS.AREA || [];
+  return nombres.slice().sort(function(a,b){
+    const ia = catalogo.findIndex(x=>normalizarTexto(x)===normalizarTexto(a));
+    const ib = catalogo.findIndex(x=>normalizarTexto(x)===normalizarTexto(b));
+    const va = a==='Sin área' ? 9999 : (ia<0 ? 5000 : ia);
+    const vb = b==='Sin área' ? 9999 : (ib<0 ? 5000 : ib);
+    if(va!==vb) return va-vb;
+    return String(a).localeCompare(String(b));
+  });
+}
+
+function indiceMaquina(nombre){
+  const lista = LISTS.MAQUINA || [];
+  const i = lista.findIndex(x=>normalizarTexto(x)===normalizarTexto(nombre));
+  return i<0 ? 9999 : i;
+}
+
+function conteoGeneralTablero(nombre){
+  const clave = normalizarTexto(nombre);
+  return registros.filter(r=>normalizarTexto(r.maquina)===clave && r.estado!=='Liberado').length;
+}
+
+function htmlTiempoTablero(iso){
+  return '<span class="maq-tiempo" data-desde="'+escapeAttr(iso)+'">'+escapeAttr(textoTiempoDesde(iso))+'</span>';
+}
+
+function htmlFichaTablero(ficha){
+  const meta = metaEstadoTablero(ficha.estado);
+  const inicio = inicioDeEstado(ficha);
+  const iso = isoDesde(inicio);
+  const vieja = ficha.registro && esPausadoViejo(ficha.registro);
+  const sel = ficha.nombre===tableroMaquinaSel ? ' sel' : '';
+  const alerta = vieja ? ' pausa-vieja' : '';
+  const tiempo = iso ? '<div class="tiempo">'+htmlTiempoTablero(iso)+'</div>' : '';
+  return '<button type="button" class="maq '+meta.clave+alerta+sel+'" data-maq="'+escapeAttr(ficha.nombre)+'">'
+    + '<div class="nombre">'+escapeAttr(ficha.nombre)+'</div>'
+    + '<div class="est">'+escapeAttr(meta.etiqueta)+'</div>'
+    + tiempo
+    + '</button>';
+}
+
+function htmlDetalleTablero(ficha){
+  const r = ficha.registro;
+  const meta = metaEstadoTablero(ficha.estado);
+  const inicio = inicioDeEstado(ficha);
+  const iso = isoDesde(inicio);
+  const problema = r ? (r.problema || 'Sin descripción') : 'Sin servicio abierto';
+  const prioridad = r ? (r.prioridad || '—') : '—';
+  const tecnicos = r ? (tecnicosVigentesTexto(r, ', ') || '—') : '—';
+  const tiempoLbl = ficha.estado==='Trabajando' ? 'Trabajando desde la liberación' : 'Tiempo en este estado';
+  return '<div class="tablero-detalle">'
+    + '<h3>'+escapeAttr(ficha.nombre)+'</h3>'
+    + '<p><span class="k">Estado: </span>'+escapeAttr(meta.etiqueta)+'</p>'
+    + '<p><span class="k">Área: </span>'+escapeAttr(ficha.area)+'</p>'
+    + '<p><span class="k">Problema: </span>'+escapeAttr(problema)+'</p>'
+    + '<p><span class="k">Prioridad: </span>'+escapeAttr(prioridad)+'</p>'
+    + '<p><span class="k">Técnicos: </span>'+escapeAttr(tecnicos)+'</p>'
+    + '<p><span class="k">'+escapeAttr(tiempoLbl)+': </span>'+htmlTiempoTablero(iso)+'</p>'
+    + '</div>';
+}
+
+function renderTablero(){
+  const grupos = document.getElementById('tableroGrupos');
+  const areasBox = document.getElementById('tableroAreas');
+  const sgi = document.getElementById('tableroSgi');
+  const detalle = document.getElementById('tableroDetalle');
+  const actualizado = document.getElementById('tableroActualizado');
+  if(!grupos || !areasBox) return;
+
+  const todas = fichasTablero();
+  const solo = document.getElementById('tableroSoloAtencion');
+  const soloAtencion = !!(solo && solo.checked);
+  const areas = ordenarAreasTablero(Array.from(new Set(todas.map(f=>f.area))));
+
+  areasBox.innerHTML = '<button type="button" data-area="" class="'+(tableroAreaFiltro?'':'on')+'">Todas</button>'
+    + areas.map(a=>'<button type="button" data-area="'+escapeAttr(a)+'" class="'+(tableroAreaFiltro===a?'on':'')+'">'+escapeAttr(a)+'</button>').join('');
+
+  if(sgi){
+    sgi.innerHTML =
+      '<div class="pill">Servicios <b>'+conteoGeneralTablero('SERVICIOS')+'</b> abiertos</div>'
+      + '<div class="pill">Infraestructura <b>'+conteoGeneralTablero('INFRAESTRUCTURA')+'</b> abiertos</div>';
+  }
+  if(actualizado) actualizado.textContent = 'Última lectura: ' + nowLabel();
+
+  const visibles = todas.filter(f=>{
+    if(tableroAreaFiltro && f.area!==tableroAreaFiltro) return false;
+    if(soloAtencion && f.estado==='Trabajando') return false;
+    return true;
+  });
+
+  const porArea = {};
+  visibles.forEach(f=>{
+    if(!porArea[f.area]) porArea[f.area] = [];
+    porArea[f.area].push(f);
+  });
+  const areasVisibles = ordenarAreasTablero(Object.keys(porArea));
+
+  if(!areasVisibles.length){
+    grupos.innerHTML = '<div class="empty">No hay máquinas con ese filtro.</div>';
+  }else{
+    grupos.innerHTML = areasVisibles.map(area=>{
+      const fichas = porArea[area].slice().sort((a,b)=>indiceMaquina(a.nombre)-indiceMaquina(b.nombre));
+      const trab = fichas.filter(f=>f.estado==='Trabajando').length;
+      const atencion = fichas.length - trab;
+      return '<section class="area-bloque"><h3>'+escapeAttr(area)
+        + '<span>'+trab+' trabajando · '+atencion+' con atención</span></h3><div class="maq-grid">'
+        + fichas.map(htmlFichaTablero).join('')
+        + '</div></section>';
+    }).join('');
+  }
+
+  if(detalle){
+    const sel = todas.find(f=>f.nombre===tableroMaquinaSel);
+    detalle.innerHTML = sel ? htmlDetalleTablero(sel) : '';
+  }
+}
+
+function actualizarTiemposTablero(){
+  document.querySelectorAll('#viewTablero .maq-tiempo').forEach(el=>{
+    el.textContent = textoTiempoDesde(el.getAttribute('data-desde')||'');
+  });
+}
+
 function tickClock(){
   const d = new Date();
   document.getElementById('clockTime').textContent =
@@ -2374,16 +2654,32 @@ function tickClock(){
   if(pFin) pFin.textContent = nowLabel();
   actualizarElapsed();
   actualizarPreviewCierre();
+  actualizarTiemposTablero();
 }
 tickClock();
 setInterval(tickClock, 1000*15);
 
 setInterval(function(){
   if(!urlConfigurada()) return;
-  if(!supervisorUnlocked && !tecnicoUnlocked) return;
-  if(!vistaSupervisorOTecnico()) return;
+  const tableroActivo = document.getElementById('viewTablero').classList.contains('active');
+  if(!supervisorUnlocked && !tecnicoUnlocked && !tableroActivo) return;
+  if(!vistaSupervisorOTecnico() && !tableroActivo) return;
   cargarRegistros(true);
 }, 45000);
+
+document.getElementById('tableroAreas').addEventListener('click', function(ev){
+  const btn = ev.target.closest('button');
+  if(!btn) return;
+  tableroAreaFiltro = btn.getAttribute('data-area') || '';
+  renderTablero();
+});
+document.getElementById('tableroGrupos').addEventListener('click', function(ev){
+  const btn = ev.target.closest('.maq');
+  if(!btn) return;
+  const nombre = btn.getAttribute('data-maq') || '';
+  tableroMaquinaSel = tableroMaquinaSel===nombre ? '' : nombre;
+  renderTablero();
+});
 
 actualizarControlesGuardado();
 cargarRegistros();
